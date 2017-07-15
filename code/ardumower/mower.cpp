@@ -35,6 +35,8 @@
 #include "pinman.h"
 #include "buzzer.h"
 
+#include <avr/wdt.h>
+
 
 Mower robot;
 
@@ -97,10 +99,10 @@ Mower::Mower(){
   
   // ------ sonar ------------------------------------
   sonarUse                   = 0;          // use ultra sonic sensor? (WARNING: robot will slow down, if enabled but not connected!)
-  sonarLeftUse               = 1;
-  sonarRightUse              = 1;
-  sonarCenterUse             = 0;
-  sonarTriggerBelow          = 1050;       // ultrasonic sensor trigger distance
+  sonarLeftUse               = 0;
+  sonarRightUse              = 0;
+  sonarCenterUse             = 1;
+  sonarTriggerBelow          = 150;       // ultrasonic sensor trigger distance
   
   // ------ perimeter ---------------------------------
   perimeterUse               = 0;          // use perimeter?    
@@ -122,7 +124,7 @@ Mower::Mower(){
   lawnSensorUse     = 0;                   // use capacitive lawn Sensor
   
   // ------  IMU (compass/accel/gyro) ----------------------
-  imuUse                     = 0;          // use IMU?
+  imuUse                     = 1;          // use IMU?
   imuCorrectDir              = 0;          // correct direction by compass?
   imuDirPID.Kp               = 5.0;        // direction PID controller
   imuDirPID.Ki               = 1.0;
@@ -135,22 +137,23 @@ Mower::Mower(){
   remoteUse                  = 1;          // use model remote control (R/C)?
   
   // ------ battery -------------------------------------
-  batMonitor                 = 1;          // monitor battery and charge voltage?
-  batGoHomeIfBelow           = 23.7;       // drive home voltage (Volt)
-  batSwitchOffIfBelow        = 21.7;       // switch off battery if below voltage (Volt)
+  batMonitor                 = 0;          // monitor battery and charge voltage?
+  batGoHomeIfBelow           = 12.0;       // drive home voltage (Volt)
+  batSwitchOffIfBelow        = 9.0;       // switch off battery if below voltage (Volt)
 		
   #if defined (PCB_1_2)     // PCB 1.2	  
 	  batSwitchOffIfIdle         = 0;          // switch off battery if idle (minutes, 0=off) 	
 		startChargingIfBelow       = 99999.0;      // start charging if battery Voltage is below
 		chargingTimeout            = 2147483647;  // safety timer for charging (ms) 12600000 = 3.5hrs
 		batFullCurrent             = -99999.0;       // current flowing when battery is fully charged	 (amp)
-		batFactor                  = voltageDividerUges(47, 5.1, 1.0)*ADC2voltage(1)*10;   // ADC to battery voltage factor	*10
-		batChgFactor               = voltageDividerUges(47, 5.1, 1.0)*ADC2voltage(1)*10;   // ADC to battery voltage factor *10
+		batFactor                  = voltageDividerUges(33, 4.7, 1.0)*ADC2voltage(1)*10;   // ADC to battery voltage factor	*10
+		batChgFactor               = voltageDividerUges(33, 4.7, 1.0)*ADC2voltage(1)*10;   // ADC to battery voltage factor *10
 		chgFactor                  = ADC2voltage(1)*10;        // ADC to charging current ampere factor *10
     #ifdef __AVR__         // Mega
 			//batFactor                = 0.495;      // voltage = ADC * batFactor / 10     
       //batChgFactor             = 0.495;      // voltage = ADC * batFactor / 10  
-			//chgFactor                = 0.045;         // INA169 charge current conversion factor  Ampere = ADC * chgFactor / 10
+
+			//chgFactor                = 0.045;         // INA169 charge current conversion factor  Ampere = ADC * chgFactor / 10
     #else                  // Due
       //batFactor                = 0.3267;      // voltage = ADC * batFactor / 10   
       //batChgFactor             = 0.3267;      // voltage = ADC * batFactor / 10
@@ -175,8 +178,8 @@ Mower::Mower(){
     #endif  
   #endif
   
-  batFull                    = 29.4;      // battery reference Voltage (fully charged) PLEASE ADJUST IF USING A DIFFERENT BATTERY VOLTAGE! FOR a 12V SYSTEM TO 14.4V
-  batChargingCurrentMax      = 1.6;       // maximum current your charger can devliver  
+  batFull                    = 14.7;      // battery reference Voltage (fully charged) PLEASE ADJUST IF USING A DIFFERENT BATTERY VOLTAGE! FOR a 12V SYSTEM TO 14.4V
+  batChargingCurrentMax      = 8;       // maximum current your charger can devliver  
   
   // ------  charging station ---------------------------
   stationRevTime             = 1800;       // charge station reverse time (ms)
@@ -185,7 +188,7 @@ Mower::Mower(){
   stationCheckTime           = 1700;       // charge station reverse check time (ms)
 
   // ------ odometry ------------------------------------
-  odometryUse                = 1;          // use odometry?  
+  odometryUse                = 0;          // use odometry?  
   wheelDiameter              = 250;        // wheel diameter (mm)
   #if defined (PCB_1_2)
     odometryTicksPerRevolution = 1060*2;       // encoder ticks per one full resolution    
@@ -197,7 +200,7 @@ Mower::Mower(){
   odometryWheelBaseCm        = 36;         // wheel-to-wheel distance (cm)
   
   // ----- GPS -------------------------------------------
-  gpsUse                     = 0;          // use GPS?
+  gpsUse                     = 1;          // use GPS?
   stuckIfGpsSpeedBelow       = 0.2;        // if Gps speed is below given value the mower is stuck
   gpsSpeedIgnoreTime         = 5000;       // how long gpsSpeed is ignored when robot switches into a new STATE (in ms)
 
@@ -217,7 +220,7 @@ Mower::Mower(){
 
   // ----- esp8266 ---------------------------------------
   esp8266Use                 = 0;          // use ESP8266 Wifi module? (WARNING: if enabled, you cannot use Bluetooth)
-  esp8266ConfigString        = "123test321";
+  esp8266ConfigString        = "123config123";
 
   // ------ mower stats-------------------------------------------  
   statsOverride              = false;      // if set to true mower stats are overwritten - be careful
@@ -318,6 +321,19 @@ NewPing NewSonarCenter(pinSonarCenterTrigger, pinSonarCenterEcho, 500);
 // (required so we can use Arduino Due native port)
 
 void Mower::setup(){
+  wdt_reset();
+  wdt_disable();
+  #ifdef INVERSE_BATTERY_SW
+  // keep battery switched ON
+  digitalWrite(pinBatterySwitch, 0);
+  pinMode(pinBatterySwitch, OUTPUT);
+  digitalWrite(pinBatterySwitch, 0);
+  #else
+  digitalWrite(pinBatterySwitch, 1);
+  pinMode(pinBatterySwitch, OUTPUT);
+  digitalWrite(pinBatterySwitch, 1);
+  #endif
+
   Buzzer.begin();
 	Console.begin(CONSOLE_BAUDRATE);  
 	I2Creset();	
@@ -326,9 +342,6 @@ void Mower::setup(){
 	ADCMan.init();
   Console.println("SETUP");
 
-  // keep battery switched ON
-  pinMode(pinBatterySwitch, OUTPUT);
-  digitalWrite(pinBatterySwitch, HIGH);
   
   // LED, buzzer, battery
   pinMode(pinLED, OUTPUT);    
@@ -343,16 +356,24 @@ void Mower::setup(){
   // left wheel motor
   pinMode(pinMotorEnable, OUTPUT);  
   digitalWrite(pinMotorEnable, HIGH);
+  
+  #ifdef PCB_smallcar
+  pinMode(pinMotorRST, OUTPUT);
+  digitalWrite(pinMotorRST, HIGH);
+  pinMode(pinMotorREF, OUTPUT);
+  digitalWrite(pinMotorREF, HIGH);
+  #endif
+  
   pinMode(pinMotorLeftPWM, OUTPUT);
   pinMode(pinMotorLeftDir, OUTPUT);   
   pinMode(pinMotorLeftSense, INPUT);     
-  pinMode(pinMotorLeftFault, INPUT);    
+  pinMode(pinMotorLeftFault, INPUT_PULLUP);    
   
   // right wheel motor
   pinMode(pinMotorRightPWM, OUTPUT);
   pinMode(pinMotorRightDir, OUTPUT); 
   pinMode(pinMotorRightSense, INPUT);       
-  pinMode(pinMotorRightFault, INPUT);  
+  pinMode(pinMotorRightFault, INPUT_PULLUP);  
   
   // mower motor
   pinMode(pinMotorMowDir, OUTPUT); 
@@ -361,7 +382,7 @@ void Mower::setup(){
   pinMode(pinMotorMowRpm, INPUT);    
   pinMode(pinMotorMowEnable, OUTPUT);
   digitalWrite(pinMotorMowEnable, HIGH);  
-  pinMode(pinMotorMowFault, INPUT);      
+  pinMode(pinMotorMowFault, INPUT_PULLUP);
     
   // lawn sensor
   pinMode(pinLawnBackRecv, INPUT);
@@ -406,7 +427,7 @@ void Mower::setup(){
   pinMode(pinRemoteMow, INPUT);
   pinMode(pinRemoteSteer, INPUT);
   pinMode(pinRemoteSpeed, INPUT); 
-  pinMode(pinRemoteSwitch, INPUT);       
+  pinMode(pinRemoteSwitch, INPUT_PULLUP);       
 
   // odometry
   pinMode(pinOdometryLeft, INPUT_PULLUP);  
@@ -417,7 +438,7 @@ void Mower::setup(){
   // user switches
   pinMode(pinUserSwitch1, OUTPUT);
   pinMode(pinUserSwitch2, OUTPUT);
-  pinMode(pinUserSwitch3, OUTPUT);   
+  pinMode(pinUserSwitch3, OUTPUT);
   
   // other
   pinMode(pinVoltageMeasurement, INPUT);  
@@ -513,46 +534,56 @@ void Mower::setup(){
 	//Motor Mow RPM	
     attachInterrupt(pinMotorMowRpm, PCINT2_vect, CHANGE);    
   #endif   
-  
+
+  wdt_reset();
+  wdt_enable(WDTO_8S);
 }
 
 void checkMotorFault(){
   if (digitalRead(pinMotorLeftFault)==LOW){
     robot.addErrorCounter(ERR_MOTOR_LEFT);
-    //Console.println(F("Error: motor left fault"));
+    #ifndef IGNORE_MOTOR_FAULT
     robot.setNextState(STATE_ERROR, 0);
-    //digitalWrite(pinMotorEnable, LOW);
-    //digitalWrite(pinMotorEnable, HIGH);
+    #endif
   }
   if  (digitalRead(pinMotorRightFault)==LOW){
     robot.addErrorCounter(ERR_MOTOR_RIGHT);
-    //Console.println(F("Error: motor right fault"));
+    #ifndef IGNORE_MOTOR_FAULT
     robot.setNextState(STATE_ERROR, 0);
-    //digitalWrite(pinMotorEnable, LOW);
-    //digitalWrite(pinMotorEnable, HIGH);
+    #endif
   }
   if (digitalRead(pinMotorMowFault)==LOW){  
     robot.addErrorCounter(ERR_MOTOR_MOW);
-    //Console.println(F("Error: motor mow fault"));
+    #ifndef IGNORE_MOTOR_FAULT
     robot.setNextState(STATE_ERROR, 0);
-    //digitalWrite(pinMotorMowEnable, LOW);
-    //digitalWrite(pinMotorMowEnable, HIGH);
+    #endif
+    //Console.println(F("Error: motor mow fault"));
   }
+  digitalWrite(pinMotorEnable, LOW);
+  delay(5);
+  digitalWrite(pinMotorEnable, HIGH);
+
+  digitalWrite(pinMotorMowEnable, LOW);
+  delay(5);
+  digitalWrite(pinMotorMowEnable, HIGH);
 }
 
 void Mower::resetMotorFault(){
   if (digitalRead(pinMotorLeftFault)==LOW){
     digitalWrite(pinMotorEnable, LOW);
+    delay(5);
     digitalWrite(pinMotorEnable, HIGH);
     //Console.println(F("Reset motor left fault"));
 }
   if  (digitalRead(pinMotorRightFault)==LOW){
     digitalWrite(pinMotorEnable, LOW);
+    delay(5);
     digitalWrite(pinMotorEnable, HIGH);
     //Console.println(F("Reset motor right fault"));
 }
   if (digitalRead(pinMotorMowFault)==LOW){  
     digitalWrite(pinMotorMowEnable, LOW);
+    delay(5);
     digitalWrite(pinMotorMowEnable, HIGH);
     //Console.println(F("Reset motor mow fault"));
 }
@@ -560,6 +591,8 @@ void Mower::resetMotorFault(){
 
  
 int Mower::readSensor(char type){
+  int tmpRead, tmpResult;
+  
   switch (type) {
 // motors------------------------------------------------------------------------------------------------
     case SEN_MOTOR_MOW: return ADCMan.read(pinMotorMowSense); break;
@@ -597,9 +630,36 @@ int Mower::readSensor(char type){
     //case SEN_SONAR_LEFT: return(readHCSR04(pinSonarLeftTrigger, pinSonarLeftEcho)); break;
     //case SEN_SONAR_RIGHT: return(readHCSR04(pinSonarRightTrigger, pinSonarRightEcho)); break;
     
-    case SEN_SONAR_CENTER: return(NewSonarCenter.ping_cm()); break;
-    case SEN_SONAR_LEFT: return(NewSonarLeft.ping_cm()); break;
-    case SEN_SONAR_RIGHT: return(NewSonarRight.ping_cm()); break;    
+    case SEN_SONAR_CENTER:
+      tmpRead = NewSonarCenter.ping_cm();
+      if (tmpRead == NO_ECHO) {
+        sonarCenterPrev = 500;
+        return tmpRead;
+      }
+      tmpResult = (sonarCenterPrev + tmpRead) / 2;
+      sonarCenterPrev = tmpRead;
+      return tmpResult;
+      break;
+    case SEN_SONAR_LEFT:
+      tmpRead = NewSonarLeft.ping_cm();
+      if (tmpRead == NO_ECHO) {
+        sonarLeftPrev = 500;
+        return tmpRead;
+      }
+      tmpResult = (sonarLeftPrev + tmpRead) / 2;
+      sonarLeftPrev = tmpRead;
+      return tmpResult;
+      break;
+    case SEN_SONAR_RIGHT:
+      tmpRead = NewSonarRight.ping_cm();
+      if (tmpRead == NO_ECHO) {
+        sonarRightPrev = 500;
+        return tmpRead;
+      }
+      tmpResult = (sonarRightPrev + tmpRead) / 2;
+      sonarRightPrev = tmpRead;
+      return tmpResult;
+      break;
     
     // case SEN_LAWN_FRONT: return(measureLawnCapacity(pinLawnFrontSend, pinLawnFrontRecv)); break;    
     //case SEN_LAWN_BACK: return(measureLawnCapacity(pinLawnBackSend, pinLawnBackRecv)); break;    
@@ -610,8 +670,11 @@ int Mower::readSensor(char type){
     case SEN_RTC: 
       if (!readDS1307(datetime)) {
         //Console.println("RTC data error!");        
-        addErrorCounter(ERR_RTC_DATA);         
-        setNextState(STATE_ERROR, 0);       
+        addErrorCounter(ERR_RTC_DATA);
+        // Return home if RTC data error
+        if (stateCurr != STATE_PERI_FIND && stateCurr != STATE_PERI_TRACK && stateCurr != STATE_PERI_ROLL && stateCurr != STATE_PERI_REV && stateCurr != STATE_STATION
+            && stateCurr != STATE_STATION_CHARGING && stateCurr != STATE_PERI_OUT_FORW && stateCurr != STATE_PERI_OUT_REV && stateCurr != STATE_PERI_OUT_ROLL)
+          setNextState(STATE_PERI_FIND, 0);
       }
       break;
 // rain--------------------------------------------------------------------------------------------------------
@@ -640,7 +703,11 @@ void Mower::setActuator(char type, int value){
       break;
     case ACT_CHGRELAY: digitalWrite(pinChargeRelay, value); break;
     //case ACT_CHGRELAY: digitalWrite(pinChargeRelay, !value); break;
+    #ifndef INVERSE_BATTERY_SW
     case ACT_BATTERY_SW: digitalWrite(pinBatterySwitch, value); break;
+    #else
+    case ACT_BATTERY_SW: digitalWrite(pinBatterySwitch, !value); break;
+    #endif
   }
 }
 

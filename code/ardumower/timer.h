@@ -18,13 +18,15 @@ void Robot::setDefaultTime(){
 void Robot::checkTimer(){
   if (millis() < nextTimeTimer) return;
   nextTimeTimer = millis() + 60000;
-  srand(time2minutes(datetime.time)); // initializes the pseudo-random number generator for c++ rand()
-  randomSeed(time2minutes(datetime.time)); // initializes the pseudo-random number generator for arduino random()
-  receiveGPSTime(); 
+  srand(time2minutes(datetime.time) + millis()); // initializes the pseudo-random number generator for c++ rand()
+  randomSeed(time2minutes(datetime.time) + millis()); // initializes the pseudo-random number generator for arduino random()
+  receiveGPSTime();
   boolean stopTimerTriggered = true;
+  boolean haveActiveTimers = false;
   if (timerUse){    
     for (int i=0; i < MAX_TIMERS; i++){
       if (timer[i].active){
+        haveActiveTimers = true;
         if  ( (timer[i].daysOfWeek & (1 << datetime.date.dayOfWeek)) != 0) {
           int startmin = time2minutes(timer[i].startTime);
           int stopmin =  time2minutes(timer[i].stopTime);
@@ -32,22 +34,22 @@ void Robot::checkTimer(){
           if ((currmin >= startmin) && (currmin < stopmin)){
             // start timer triggered
             stopTimerTriggered = false;
-            if ((stateCurr == STATE_STATION) || (stateCurr == STATE_OFF)){
+            if (!(rainUse && rain) && ((stateCurr == STATE_STATION) || (stateCurr == STATE_OFF))){
               Console.println(F("timer start triggered"));
               motorMowEnable = true;
               setNextState(STATE_FORWARD, 0);
             } 
           }           
         }
-      if ((stopTimerTriggered) && (timer[i].active)){
+      }
+    }
+    if (haveActiveTimers && stopTimerTriggered){
       if (stateCurr == STATE_FORWARD){
         Console.println(F("timer stop triggered"));
         if (perimeterUse){
         setNextState(STATE_PERI_FIND, 0);
       }
         else setNextState(STATE_OFF,0);
-      } 
-    }
       }
     }
   }

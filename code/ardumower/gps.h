@@ -35,7 +35,12 @@
 #define _GPS_KMPH_PER_KNOT 1.852
 #define _GPS_MILES_PER_METER 0.00062137112
 #define _GPS_KM_PER_METER 0.001
+// no fix timeout
+#define _GPS_TIMEOUT_FIX 2000
 // #define _GPS_NO_STATS
+
+// Number of GPS readings to average (size of GPS averaging array)
+#define GPS_AVERAGING 10
 
 class GPS
 {
@@ -65,6 +70,10 @@ public:
   // signed altitude in centimeters (from GPGGA sentence)
   inline long altitude() { return _altitude; }
 
+  long longitude();
+  
+  long latitude();
+
   // course in last full GPRMC sentence in 100th of a degree
   inline unsigned long course() { return _course; }
 
@@ -86,7 +95,11 @@ public:
   float f_speed_mph();
   float f_speed_mps();
   float f_speed_kmph();
-
+  void set_debug(boolean debug_flag);
+  float f_bearing(long lat1, long lon1, long lat2, long lon2);
+  float f_distance(long lat1, long lon1, long lat2, long lon2);
+  boolean get_debug();
+  
   //static int library_version() { return _GPS_VERSION; }
 
   static float distance_between (float lat1, float long1, float lat2, float long2);
@@ -100,6 +113,14 @@ public:
 private:
   enum {_GPS_SENTENCE_GPGGA, _GPS_SENTENCE_GPRMC, _GPS_SENTENCE_OTHER};
 
+  long _a_latitude[GPS_AVERAGING];
+  long _a_longitude[GPS_AVERAGING];
+  int8_t _a_lat_pos;
+  int8_t _a_lon_pos;
+  boolean _a_lat_good;
+  boolean _a_lon_good;
+
+  boolean gpsDebug;
   // properties
   unsigned long _time, _new_time;
   unsigned long _date, _new_date;
@@ -132,6 +153,8 @@ private:
 #endif
 
   // internal utilities
+  
+  long nmeaDegrees2Decimal();
   int from_hex(char a);
   unsigned long parse_decimal();
   unsigned long parse_degrees();

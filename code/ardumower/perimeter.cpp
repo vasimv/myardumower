@@ -29,6 +29,8 @@
 #include "drivers.h"
 #include "config.h"
 
+// #define SIMULATE_PERIMETER
+
 //#define pinLED 13                  
 
 
@@ -54,7 +56,7 @@ Perimeter::Perimeter(){
   useDifferentialPerimeterSignal = true;
   swapCoilPolarity = false;
   timedOutIfBelowSmag = 300;
-  timeOutSecIfNotInside = 8;
+  timeOutSecIfNotInside = 80;
   callCounter = 0;
   mag[0] = mag[1] = 0;
   smoothMag[0] = smoothMag[1] = 0;
@@ -103,6 +105,7 @@ const int8_t* Perimeter::getRawSignalSample(byte idx) {
   return rawSignalSample[idx];
 }
 
+#ifndef SIMULATE_PERIMETER
 int Perimeter::getMagnitude(byte idx){  
   if (ADCMan.isCaptureComplete(idxPin[idx])) {
     // Keep a sample of the raw signal
@@ -114,9 +117,18 @@ int Perimeter::getMagnitude(byte idx){
   return mag[idx];
 }
 
-int Perimeter::getSmoothMagnitude(byte idx){  
+int Perimeter::getSmoothMagnitude(byte idx){
   return smoothMag[idx];
 }
+#else
+int Perimeter::getMagnitude(byte idx){  
+  return (digitalRead(pinRemoteSwitch) == HIGH) ? -200 : 200;
+}
+
+int Perimeter::getSmoothMagnitude(byte idx){
+  return (digitalRead(pinRemoteSwitch) == HIGH) ? -200 : 200;
+}
+#endif
 
 void Perimeter::printADCMinMax(int8_t *samples){
   int8_t vmax = SCHAR_MIN;
@@ -189,6 +201,7 @@ float Perimeter::getFilterQuality(byte idx){
   return filterQuality[idx];
 }
 
+#ifndef SIMULATE_PERIMETER
 boolean Perimeter::isInside(byte idx){
   if (abs(mag[idx]) > 1000) {
     // Large signal, the in/out detection is reliable.
@@ -200,13 +213,21 @@ boolean Perimeter::isInside(byte idx){
   }
 }
 
-
 boolean Perimeter::signalTimedOut(byte idx){
   if (getSmoothMagnitude(idx) < timedOutIfBelowSmag) return true;
-  if (millis() - lastInsideTime[idx] > timeOutSecIfNotInside * 1000) return true;
+  if ((millis() - lastInsideTime[idx]) > ((unsigned long) timeOutSecIfNotInside * 1000)) return true;
   return false;
 }
+#else
+// Simulate perimeter outside by button
+boolean Perimeter::isInside(byte idx){
+  return digitalRead(pinRemoteSwitch) == HIGH;
+}
 
+boolean Perimeter::signalTimedOut(byte idx){
+  return false;
+}
+#endif
 
 // digital matched filter (cross correlation)
 // http://en.wikipedia.org/wiki/Cross-correlation

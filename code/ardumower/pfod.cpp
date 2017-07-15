@@ -259,6 +259,8 @@ void RemoteControl::sendErrorMenu(boolean update){
   serialPort->print(robot->errorCounterMax[ERR_GPS_DATA]);
   serialPort->print(F("|zz~Robot stuck "));
   serialPort->print(robot->errorCounterMax[ERR_STUCK]);
+  serialPort->print(F("|zz~Emergency return "));
+  serialPort->print(robot->errorCounterMax[ERR_EMERG_RETURN]);
   serialPort->print(F("|zz~EEPROM data "));
   serialPort->print(robot->errorCounterMax[ERR_EEPROM_DATA]);
   serialPort->println("}");
@@ -529,7 +531,7 @@ void RemoteControl::sendPerimeterMenu(boolean update){
   if (robot->perimeterMag < 0) serialPort->print(" (inside)");
     else serialPort->print(" (outside)");
   sendSlider("e08", F("Timed-out if below smag"), robot->perimeter.timedOutIfBelowSmag, "", 1, 2000);  
-  sendSlider("e14", F("Timeout (s) if not inside"), robot->perimeter.timeOutSecIfNotInside, "", 1, 20, 1);  
+  sendSlider("e14", F("Timeout (s) if not inside"), robot->perimeter.timeOutSecIfNotInside, "", 1, 200, 20);
   sendSlider("e04", F("Trigger timeout"), robot->perimeterTriggerTimeout, "", 1, 2000);
   sendSlider("e05", F("Perimeter out roll time max"), robot->perimeterOutRollTimeMax, "", 1, 8000);       
   sendSlider("e06", F("Perimeter out roll time min"), robot->perimeterOutRollTimeMin, "", 1, 8000); 
@@ -601,19 +603,36 @@ void RemoteControl::processRainMenu(String pfodCmd){
   sendRainMenu(true);
 }
 
+void RemoteControl::printCoord(Stream &s, long lat, long lon) {
+  Streamprint(s, "%02d.%06d, %02d.%06d", (int) (lat / 1000000), (int) (lat % 1000000), (int) (lon / 1000000), (int) (lon % 1000000));
+}
+
 void RemoteControl::sendGPSMenu(boolean update){
+  long lat, lon;
+  
   if (update) serialPort->print("{:"); else serialPort->print(F("{.GPS`1000"));
   serialPort->print(F("|q00~Use "));
   sendYesNo(robot->gpsUse);
   sendSlider("q01", F("Stuck if GPS speed is below"), robot->stuckIfGpsSpeedBelow, "", 0.1, 3); 
   sendSlider("q02", F("GPS speed ignore time"), robot->gpsSpeedIgnoreTime, "", 1, 10000, robot->motorReverseTime);       
+  serialPort->print(F("|q03~Debug "));
+  sendYesNo(robot->gps.get_debug());
+  serialPort->print(F("|q04~Save point"));
+  serialPort->print(F("|q06~Coord: "));
+  printCoord(*serialPort, robot->gps.latitude(), robot->gps.longitude());
+  serialPort->print(F("|q07~Saved: "));
+  printCoord(*serialPort, robot->savedLat, robot->savedLon);
+  serialPort->print(F("|q08~Return: "));
+  printCoord(*serialPort, robot->nearLat, robot->nearLon);
   serialPort->println("}");
 }
 
 void RemoteControl::processGPSMenu(String pfodCmd){      
   if (pfodCmd == "q00") robot->gpsUse = !robot->gpsUse;
   else if (pfodCmd.startsWith("q01")) processSlider(pfodCmd, robot->stuckIfGpsSpeedBelow, 0.1);  
-  else if (pfodCmd.startsWith("q02")) processSlider(pfodCmd, robot->gpsSpeedIgnoreTime, 1);  
+  else if (pfodCmd.startsWith("q02")) processSlider(pfodCmd, robot->gpsSpeedIgnoreTime, 1);
+  else if (pfodCmd == "q03") { robot->gps.set_debug(!robot->gps.get_debug()); }
+  else if (pfodCmd == "q04") robot->savePoint();
   sendGPSMenu(true);
 }
 
@@ -688,7 +707,7 @@ void RemoteControl::sendBatteryMenu(boolean update){
   //Console.println(robot->batFactor);   
   sendSlider("j02", F("Go home if below Volt"), robot->batGoHomeIfBelow, "", 0.1, robot->batFull, (robot->batFull*0.72));  // for Sony Konion cells 4.2V * 0,72= 3.024V which is pretty safe to use 
   sendSlider("j12", F("Switch off if idle minutes"), robot->batSwitchOffIfIdle, "", 1, 300, 1);  
-  sendSlider("j03", F("Switch off if below Volt"), robot->batSwitchOffIfBelow, "", 0.1, robot->batFull, (robot->batFull*0.72));  
+  sendSlider("j03", F("Switch off if below Volt"), robot->batSwitchOffIfBelow, "", 0.1, robot->batFull, (robot->batFull*0.6));  
   serialPort->print(F("|j04~Charge "));
   serialPort->print(robot->chgVoltage);
   serialPort->print("V ");
@@ -1049,20 +1068,27 @@ void RemoteControl::processCompassMenu(String pfodCmd){
     sendCompassMenu(true);
   } else if (pfodCmd == "cn"){      
     robot->imuRollHeading = 0;
+    robot->imuRollPID.reset();
     robot->setNextState(STATE_ROLL_WAIT, 0);            
     sendCompassMenu(true);
   } else if (pfodCmd == "cs"){
     robot->imuRollHeading = PI;
+    robot->imuRollPID.reset();
     robot->setNextState(STATE_ROLL_WAIT, 0);            
     sendCompassMenu(true);
   } else if (pfodCmd == "cw"){
     robot->imuRollHeading = -PI/2;
+    robot->imuRollPID.reset();
     robot->setNextState(STATE_ROLL_WAIT, 0);            
     sendCompassMenu(true);
   } else if (pfodCmd == "ce"){
     robot->imuRollHeading = PI/2;
+    robot->imuRollPID.reset();
     robot->setNextState(STATE_ROLL_WAIT, 0);            
     sendCompassMenu(true);
+  } else if (pfodCmd == "co") {
+    robot->setNextState(STATE_OFF, 0);
+    sendCommandMenu(true);
   }
 }
 
@@ -1132,7 +1158,7 @@ void RemoteControl::processSettingsMenu(String pfodCmd){
 
 // process pfodState
 void RemoteControl::run(){  
-  if (pfodState == PFOD_LOG_SENSORS){
+  if (pfodState == PFOD_LOG_SENSORS || pfodState == PFOD_LOG_EXTENDED){
       //robot->printInfo(Bluetooth);
       //serialPort->println("test");
       serialPort->print((float(millis())/1000.0f));
@@ -1197,6 +1223,10 @@ void RemoteControl::run(){
       serialPort->print(lat);
       serialPort->print(",");
       serialPort->print(lon);
+      serialPort->print(",");
+      serialPort->print(robot->gps.latitude());
+      serialPort->print(",");
+      serialPort->print(robot->gps.longitude());
       serialPort->println();
   } else if (pfodState == PFOD_PLOT_BAT){
     if (millis() >= nextPlotTime){
@@ -1352,7 +1382,11 @@ void RemoteControl::run(){
       serialPort->print(",");
       serialPort->print(lat);
       serialPort->print(",");
-      serialPort->println(lon);
+      serialPort->print(lon);
+      serialPort->print(",");
+      serialPort->print(robot->gps.latitude());
+      serialPort->print(",");
+      serialPort->println(robot->gps.longitude());
     }
   } else if (pfodState == PFOD_PLOT_GPS2D){
     if (millis() >= nextPlotTime){
@@ -1385,6 +1419,12 @@ void RemoteControl::run(){
       serialPort->println(robot->motorRightPID.eold);
     }
   }
+  if (pfodState == PFOD_LOG_EXTENDED) {
+    sendMotorMenu(true);
+    sendMowMenu(true);
+    sendBatteryMenu(true);
+    sendErrorMenu(true);
+  }
 }
 
 // process serial input from pfod App
@@ -1411,7 +1451,7 @@ bool RemoteControl::readSerial(){
           serialPort->print(F("time,leftsen,rightsen,mowsen,sonleft,soncenter,sonright,"));
           serialPort->print(F("perinside,permag,odoleft,odoright,yaw,pitch,roll,gyrox,gyroy,"));
           serialPort->print(F("gyroz,accx,accy,accz,comx,comy,comz,hdop,sats,gspeed,gcourse,"));
-          serialPort->println(F("galt,lat,lon"));
+          serialPort->println(F("galt,lat,lon,llat,llon"));
           pfodState = PFOD_LOG_SENSORS;
         }  
         else if (pfodCmd == "y1") {
@@ -1458,7 +1498,7 @@ bool RemoteControl::readSerial(){
         }
         else if (pfodCmd == "y8") {
           // plot GPS 
-          serialPort->println(F("{=GPS`300|time s`0|hdop`1|sat`2|spd`3|course`4|alt`5|lat`6|lon`7}"));
+          serialPort->println(F("{=GPS`300|time s`0|hdop`1|sat`2|spd`3|course`4|alt`5|lat`6|lon`7|llat`8|llon`9}"));
           nextPlotTime = 0;
           pfodState = PFOD_PLOT_GPS;          
         }
@@ -1467,7 +1507,15 @@ bool RemoteControl::readSerial(){
           serialPort->println(F("{=gps2d|position`0~~~x|`~~~y}"));
           nextPlotTime = 0;
           pfodState = PFOD_PLOT_GPS2D;
-        }        
+        }
+        else if (pfodCmd == "y99") {   // log raw sensors and extended info
+          serialPort->println(F("{=Log sensors}"));
+          serialPort->print(F("time,leftsen,rightsen,mowsen,sonleft,soncenter,sonright,"));
+          serialPort->print(F("perinside,permag,odoleft,odoright,yaw,pitch,roll,gyrox,gyroy,"));
+          serialPort->print(F("gyroz,accx,accy,accz,comx,comy,comz,hdop,sats,gspeed,gcourse,"));
+          serialPort->println(F("galt,lat,lon,llat,llon"));
+          pfodState = PFOD_LOG_EXTENDED;
+        }
         else if (pfodCmd == "c1") {
           // ADC calibration          
           ADCMan.calibrate();

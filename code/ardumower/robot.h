@@ -126,8 +126,9 @@ enum {
   ERR_IMU_CALIB,
   ERR_EEPROM_DATA,
   ERR_STUCK,
+  ERR_EMERG_RETURN,
   // <---- add new error types here (NOTE: increase MAGIC to avoid corrupt EEPROM error data!)
-  ERR_ENUM_COUNT,  
+  ERR_ENUM_COUNT,
 };  
 
 // finate state machine states
@@ -156,16 +157,20 @@ enum {
   STATE_PERI_OUT_REV,   // outside perimeter reverse driving without checkPerimeterBoundary()
   STATE_PERI_OUT_ROLL,   // outside perimeter rolling driving without checkPerimeterBoundary()
   STATE_TILT_STOP,    // tilt sensor activated, stop motors, wait for un-tilt
+  STATE_EMERG_ROLL, // Roll to last saved GPS coordinages when perimeter timeout
+  STATE_EMERG_FORWARD, // Run forward to last saved GPS coordinates until inside perimeter
+  STATE_FASTRETURN_FORWARD,
+  STATE_PERI_SCAN, // Roll to maximum (dir == LEFT) or minimum (dir == RIGHT) abs(magnitude) of perimeter signal, switch to PERI_OUT_FORW if outside after
 };
 
 // roll types
-enum { LEFT, RIGHT };
+enum { LEFT, RIGHT, RETURN };
 
 // mow patterns
 enum { MOW_RANDOM, MOW_LANES, MOW_BIDIR };
 
 // console mode
-enum { CONSOLE_SENSOR_COUNTERS, CONSOLE_SENSOR_VALUES, CONSOLE_PERIMETER, CONSOLE_OFF };
+enum { CONSOLE_SENSOR_COUNTERS, CONSOLE_SENSOR_VALUES, CONSOLE_PERIMETER, CONSOLE_ALL, CONSOLE_OFF };
 
 
 #define MAX_TIMERS 5
@@ -186,6 +191,9 @@ class Robot
     unsigned long stateStartTime;
     unsigned long stateEndTime;
     int idleTimeSec;
+    unsigned long firstObstacleTime;
+    int obstacleAttempts;
+    float prevMowCourse;
     // --------- timer ----------------------------------
     ttimer_t timer[MAX_TIMERS];
     datetime_t datetime;
@@ -206,6 +214,14 @@ class Robot
     float gpsLon;
     float gpsX ;   // X position (m)
     float gpsY ;   // Y position (m)
+    long savedLat; // latitude of last saved inside-perimeter-point
+    long savedLon; // longitude of last saved inside-perimeter-point
+    long savedLatPrev;
+    long savedLonPrev;
+    long nearLat; // latitude, longitude of point near station and course to it (after getting out of station)
+    long nearLon;
+    float nearCourse;
+    long nextSaveTime;
     unsigned long nextTimeGPS ;
     unsigned long nextTimeCheckIfStuck ;
     float stuckIfGpsSpeedBelow ;
@@ -346,6 +362,7 @@ class Robot
     PID imuRollPID ;    // roll PID controller        
     float imuDriveHeading ;       // drive heading (IMU)
     float imuRollHeading ;      // roll heading  (IMU)
+    float imuRollHeadingPrev ; // previous roll heading (IMU)
     byte   imuRollDir;
     //point_float_t accMin;
     //point_float_t accMax;
@@ -470,6 +487,11 @@ class Robot
     float statsMowTimeHoursTotal ;
     int statsMowTimeMinutesTrip ;
     unsigned long nextTimeRobotStats ;
+    float headMin;
+    float minPeriScan;
+    float maxPeriScan;
+    float headMax;
+    int scanStatus;
     // --------------------------------------------------
     Robot();
     // robot setup
@@ -517,6 +539,8 @@ class Robot
     virtual void addErrorCounter(byte errType);    
     virtual void resetErrorCounters();
     virtual void resetMotorFault(){}
+
+    void savePoint();
 
 protected:
     // convert ppm time to RC slider value

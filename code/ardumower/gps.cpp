@@ -22,9 +22,13 @@
 */
 
 #include "gps.h"
+#include "robot.h"
+#include <string.h>
 
 #define _GPRMC_TERM   "GPRMC"
+#define _GNRMC_TERM   "GNRMC"
 #define _GPGGA_TERM   "GPGGA"
+#define _GNGGA_TERM   "GNGGA"
 
 GPS::GPS()
   :  _time(GPS_INVALID_TIME)
@@ -32,6 +36,8 @@ GPS::GPS()
   ,  _latitude(GPS_INVALID_ANGLE)
   ,  _longitude(GPS_INVALID_ANGLE)
   ,  _altitude(GPS_INVALID_ALTITUDE)
+  ,  _a_lon_good(false)
+  ,  _a_lat_good(false)
   ,  _speed(GPS_INVALID_SPEED)
   ,  _course(GPS_INVALID_ANGLE)
   ,  _hdop(GPS_INVALID_HDOP)
@@ -48,6 +54,7 @@ GPS::GPS()
   ,  _encoded_characters(0)
   ,  _good_sentences(0)
   ,  _failed_checksum(0)
+  ,  gpsDebug(false)
 #endif
 {
   _term[0] = '\0';
@@ -57,8 +64,77 @@ GPS::GPS()
 // public methods
 //
 
+// U-blox reset to default settings
+const uint8_t GPS_RESET[] = {0xb5, 0x62, 0x06, 0x09, 0x0d, 0x00, 0xff, 0xff, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xff, 0xff, 0x00, 0x00, 0x03, 0x1b, 0x9a};
+
+// U-blox set baud to 57600
+const uint8_t GPS_SET_BAUD[] = {0xb5, 0x62, 0x06, 0x00, 0x14, 0x00, 0x01, 0x00, 0x00, 0x00, 0xd0, 0x08, 0x00, 0x00, 0x00, 0xe1, 0x00, 0x00, 0x07, 0x00, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0xde, 0xc9};
+
+// U-blox neo-8m config (5hz rate)
+const uint8_t GPS_CONFIG_STRING[] = {0xb5 ,0x62 ,0x06 ,0x08 ,0x06 ,0x00 ,0xc8 ,0x00 ,0x01 ,0x00 ,0x01 ,0x00 ,0xde, 
+      0x6a ,0xb5 ,0x62 ,0x06 ,0x08 ,0x00 ,0x00 ,0x0e ,0x30, 0xb5 ,0x62 ,0x06 ,0x3d ,0x1c ,0x00 ,0x01 ,0x00 ,0x00,
+      0x00 ,0x00 ,0x00 ,0x00 ,0x00 ,0x00 ,0x00 ,0x00 ,0x00 ,0x00 ,0x00 ,0x00 ,0x00 ,0x00 ,0x00 ,0x00 ,0x00 ,0x58,
+      0x02 ,0x00 ,0x00 ,0x64 ,0x00 ,0x00 ,0x00 ,0x1e ,0xe5 ,0xb5 ,0x62 ,0x06 ,0x3d ,0x00 ,0x00 ,0x43 ,0xcf ,0xb5,
+      0x62 ,0x06 ,0x3e ,0x2c ,0x00 ,0x00 ,0x00 ,0x20 ,0x05 ,0x00 ,0x04 ,0x10 ,0x00 ,0x01 ,0x00 ,0x01 ,0x01 ,0x01,
+      0x01 ,0x03 ,0x00 ,0x01 ,0x00 ,0x01 ,0x01 ,0x03 ,0x04 ,0x10 ,0x00 ,0x00 ,0x00 ,0x01 ,0x01 ,0x05 ,0x00 ,0x03,
+      0x00 ,0x01 ,0x00 ,0x01 ,0x01 ,0x06 ,0x04 ,0x0e ,0x00 ,0x01 ,0x00 ,0x01 ,0x01 ,0xf3 ,0x29 ,0xb5 ,0x62 ,0x06,
+      0x3e ,0x00 ,0x00 ,0x44 ,0xd2 ,0xb5 ,0x62 ,0x06 ,0x01 ,0x08 ,0x00 ,0xf0 ,0x03 ,0x01 ,0x00 ,0x00 ,0x01 ,0x01,
+      0x01 ,0x06 ,0x44 ,0xb5 ,0x62 ,0x06 ,0x01 ,0x02 ,0x00 ,0xf0 ,0x03 ,0xfc ,0x14 ,0xb5 ,0x62 ,0x06 ,0x09 ,0x0d,
+      0x00 ,0x00 ,0x00 ,0x00 ,0x00 ,0xff ,0xff ,0x00 ,0x00 ,0x00 ,0x00 ,0x00 ,0x00 ,0x03 ,0x1d ,0xab};
+
+// U-blox save config
+const uint8_t GPS_CONFIG_SAVE[] = {0xb5 ,0x62 ,0x06 ,0x09 ,0x0d ,0x00 ,0x00 ,0x00 ,0x00 ,0x00 ,0xff ,0xff ,0x00,
+      0x00 ,0x00 ,0x00 ,0x00 ,0x00 ,0x17 ,0x31 ,0xbf};
+
 void GPS::init(){
+  // findGPSBaud();
+  Serial3.begin(57600);
+  delay(200);
+  Serial3.write(GPS_RESET, sizeof(GPS_RESET));
+  Serial3.flush();
+  delay(2000);
+  Serial3.end();
   Serial3.begin(9600);
+  delay(200);
+  Serial3.write(GPS_RESET, sizeof(GPS_RESET));
+  Serial3.flush();
+  delay(2000);
+  Serial3.write(GPS_SET_BAUD, sizeof(GPS_SET_BAUD));
+  delay(200);
+  Serial3.flush();
+  Serial3.end();
+  Serial3.begin(4800);
+  delay(200);
+  Serial3.write(GPS_SET_BAUD, sizeof(GPS_SET_BAUD));
+  delay(200);
+  Serial3.flush();
+  Serial3.end();
+  Serial3.begin(19200);
+  delay(200);
+  Serial3.write(GPS_SET_BAUD, sizeof(GPS_SET_BAUD));
+  delay(200);
+  Serial3.flush();
+  Serial3.end();
+  Serial3.begin(38400);
+  delay(200);
+  Serial3.write(GPS_SET_BAUD, sizeof(GPS_SET_BAUD));
+  delay(200);
+  Serial3.flush();
+  Serial3.end();
+  
+  Serial3.begin(57600);
+  Serial3.write(GPS_CONFIG_STRING, sizeof(GPS_CONFIG_STRING));
+  Serial3.flush();
+  delay(200);
+  Serial3.write(GPS_SET_BAUD, sizeof(GPS_SET_BAUD));
+  Serial3.flush();
+  Serial3.write(GPS_CONFIG_SAVE, sizeof(GPS_CONFIG_SAVE));
+  Serial3.flush();
+
+  for (byte i = 0; i < GPS_AVERAGING; i++)
+    _a_longitude[i] = _a_latitude[i] = 0;
+  _a_lon_pos = 0;
+  _a_lat_pos = 0;
 }
 
 boolean GPS::feed(){
@@ -70,10 +146,20 @@ boolean GPS::feed(){
   return false;
 }
 
+void GPS::set_debug(boolean debug_flag) {
+  gpsDebug = debug_flag;
+}
+
+boolean GPS::get_debug() {
+  return gpsDebug;
+}
+
 bool GPS::encode(char c)
 {
   bool valid_sentence = false;
 
+  if (gpsDebug)
+    Serial.print(c);
 #ifndef _GPS_NO_STATS
   ++_encoded_characters;
 #endif
@@ -133,6 +219,38 @@ int GPS::from_hex(char a)
   else
     return a - '0';
 }
+
+long GPS::nmeaDegrees2Decimal()
+{
+  long value;
+  char *p = _term;
+
+  if (!isdigit(*p))
+    return GPS_INVALID_ANGLE;
+  // converts NMEA encoded degrees into long value
+  // the last digit of the returned long "value" represents 0.000001 degrees
+  // i.e. NMEA string "5133.8123" ==> 51 degrees and 33.8123 minutes
+  // = 51.563538 degrees ==> returned value == 51563538
+  value= atol(p); // retrieves 5133 (= 51 degrees, 33 minutes)
+  long arcminutes=value%100;  // 33
+  value=(value/100)*1000000; // 51000000
+  p = strchr(p,'.'); // find decimal point in string
+  // handle fractions of minutes (up to 5 digits after decimal point)
+  for (byte b=0;b<5;b++) // five times multiply by 10 and add digit
+  {
+    if (isdigit(p[1]))
+    {
+      arcminutes*=10;
+      arcminutes+=p[1]-'0';
+      p++;
+    }
+    else arcminutes*=10;
+  }
+  arcminutes= (5*arcminutes+1)/3; // 6000000 arc minute units = 1 degree = 10000000 decimal units, do conversion with rounding
+  value+= (arcminutes/10); // add fraction units for final value
+  return value;
+}
+
 
 unsigned long GPS::parse_decimal()
 {
@@ -202,24 +320,64 @@ bool GPS::term_complete()
         _last_time_fix = _new_time_fix;
         _last_position_fix = _new_position_fix;
 
-        switch(_sentence_type)
-        {
-        case _GPS_SENTENCE_GPRMC:
-          _time      = _new_time;
-          _date      = _new_date;
-          _latitude  = _new_latitude;
-          _longitude = _new_longitude;
-          _speed     = _new_speed;
-          _course    = _new_course;
-          break;
-        case _GPS_SENTENCE_GPGGA:
-          _altitude  = _new_altitude;
-          _time      = _new_time;
-          _latitude  = _new_latitude;
-          _longitude = _new_longitude;
-          _numsats   = _new_numsats;
-          _hdop      = _new_hdop;
-          break;
+        // Average position
+        if (_sentence_type == _GPS_SENTENCE_GPRMC || _sentence_type == _GPS_SENTENCE_GPGGA) {
+          long sum_longitude = 0;
+          long sum_latitude = 0;
+
+          _a_longitude[_a_lon_pos] = _longitude;
+          if (_new_longitude != GPS_INVALID_ANGLE) {
+            if (!_a_lon_good || abs(_longitude - _new_longitude) < 1000000) {
+              _a_longitude[_a_lon_pos] = _new_longitude;
+              _a_lon_pos++;
+              if (_a_lon_pos >= GPS_AVERAGING) {
+                _a_lon_pos = 0;
+                _a_lon_good = true;
+              }
+            }
+          }
+          _a_latitude[_a_lat_pos] = _latitude;
+          if (_new_latitude != GPS_INVALID_ANGLE) {
+            if (!_a_lat_good || abs(_latitude - _new_latitude) < 1000000) {
+              _a_latitude[_a_lat_pos] = _new_latitude;
+              _a_lat_pos++;
+              if (_a_lat_pos >= GPS_AVERAGING) {
+                _a_lat_pos = 0;
+                _a_lat_good = true;
+              }
+            }
+          }
+
+          if (_a_lat_good && _a_lon_good) {
+            for (byte i = 0; i < GPS_AVERAGING; i++) {
+              sum_longitude += _a_longitude[i];
+              sum_latitude += _a_latitude[i];
+            }
+            _new_longitude = sum_longitude / GPS_AVERAGING;
+            _new_latitude = sum_latitude / GPS_AVERAGING;
+          } else {
+            _new_longitude = GPS_INVALID_ANGLE;
+            _new_latitude = GPS_INVALID_ANGLE;
+          }
+          switch(_sentence_type)
+          {
+          case _GPS_SENTENCE_GPRMC:
+            _time      = _new_time;
+            _date      = _new_date;
+            _latitude  = _new_latitude;
+            _longitude = _new_longitude;
+            _speed     = _new_speed;
+            _course    = _new_course;
+            break;
+          case _GPS_SENTENCE_GPGGA:
+            _altitude  = _new_altitude;
+            _time      = _new_time;
+            _latitude  = _new_latitude;
+            _longitude = _new_longitude;
+            _numsats   = _new_numsats;
+            _hdop      = _new_hdop;
+            break;
+          }
         }
 
         return true;
@@ -236,9 +394,9 @@ bool GPS::term_complete()
   // the first term determines the sentence type
   if (_term_number == 0)
   {
-    if (!gpsstrcmp(_term, _GPRMC_TERM))
+    if (!gpsstrcmp(_term, _GPRMC_TERM) || !gpsstrcmp(_term, _GNRMC_TERM))
       _sentence_type = _GPS_SENTENCE_GPRMC;
-    else if (!gpsstrcmp(_term, _GPGGA_TERM))
+    else if (!gpsstrcmp(_term, _GPGGA_TERM) || !gpsstrcmp(_term, _GNGGA_TERM))
       _sentence_type = _GPS_SENTENCE_GPGGA;
     else
       _sentence_type = _GPS_SENTENCE_OTHER;
@@ -258,7 +416,7 @@ bool GPS::term_complete()
       break;
     case COMBINE(_GPS_SENTENCE_GPRMC, 3): // Latitude
     case COMBINE(_GPS_SENTENCE_GPGGA, 2):
-      _new_latitude = parse_degrees();
+      _new_latitude = nmeaDegrees2Decimal();
       _new_position_fix = millis();
       break;
     case COMBINE(_GPS_SENTENCE_GPRMC, 4): // N/S
@@ -268,7 +426,7 @@ bool GPS::term_complete()
       break;
     case COMBINE(_GPS_SENTENCE_GPRMC, 5): // Longitude
     case COMBINE(_GPS_SENTENCE_GPGGA, 4):
-      _new_longitude = parse_degrees();
+      _new_longitude = nmeaDegrees2Decimal();
       break;
     case COMBINE(_GPS_SENTENCE_GPRMC, 6): // E/W
     case COMBINE(_GPS_SENTENCE_GPGGA, 5):
@@ -397,8 +555,8 @@ void GPS::f_get_position(float *latitude, float *longitude, unsigned long *fix_a
 {
   long lat, lon;
   get_position(&lat, &lon, fix_age);
-  *latitude = lat == GPS_INVALID_ANGLE ? GPS_INVALID_F_ANGLE : (lat / 100000.0);
-  *longitude = lon == GPS_INVALID_ANGLE ? GPS_INVALID_F_ANGLE : (lon / 100000.0);
+  *latitude = lat == GPS_INVALID_ANGLE ? GPS_INVALID_F_ANGLE : (lat / 1000000.0);
+  *longitude = lon == GPS_INVALID_ANGLE ? GPS_INVALID_F_ANGLE : (lon / 1000000.0);
 }
 
 void GPS::crack_datetime(int *year, byte *month, byte *day, 
@@ -417,6 +575,20 @@ void GPS::crack_datetime(int *year, byte *month, byte *day,
   if (minute) *minute = (time / 10000) % 100;
   if (second) *second = (time / 100) % 100;
   if (hundredths) *hundredths = time % 100;
+}
+
+long GPS::latitude() {
+  // Check if the data is still valid (received in less than 2 seconds)
+  if (_last_position_fix > (millis() + _GPS_TIMEOUT_FIX))
+    _latitude = GPS_INVALID_ANGLE;
+  return _latitude;
+}
+
+long GPS::longitude() {
+  // Check if the data is still valid (received in less than 2 seconds)
+  if (_last_position_fix > (millis() + _GPS_TIMEOUT_FIX))
+    _longitude = GPS_INVALID_ANGLE;
+  return _longitude;  
 }
 
 float GPS::f_altitude()    
@@ -450,6 +622,17 @@ float GPS::f_speed_kmph()
 { 
   float sk = f_speed_knots();
   return sk == GPS_INVALID_F_SPEED ? GPS_INVALID_F_SPEED : _GPS_KMPH_PER_KNOT * f_speed_knots(); 
+}
+
+float GPS::f_bearing(long lat1, long lon1, long lat2, long lon2) {
+  return atan2(lon2 - lon1, (lat2 - lat1) / cos(lat1 * 1.0e-7f * 0.01745329251f));
+}
+
+float GPS::f_distance(long lat1, long lon1, long lat2, long lon2) {
+  float dLat = (float)(lat2 - lat1);                                    
+  float dLon = (float)(lon2 - lon1) * cos(lat1 * 1.0e-7f * 0.01745329251f);
+  
+  return sqrt(dLat*dLat + dLon*dLon) * 0.111318845f;
 }
 
 const float GPS::GPS_INVALID_F_ANGLE = 1000.0;

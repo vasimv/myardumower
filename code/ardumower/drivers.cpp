@@ -179,11 +179,21 @@ void setL9958(int pinDir, int pinPWM, int speed){
 // nPWM               H     Reverse
 void setMC33926(int pinDir, int pinPWM, int speed){
   if (speed < 0){
+    #ifdef PCB_smallcar
+    digitalWrite(pinDir, LOW) ;
+    PinMan.analogWrite(pinPWM, (byte)abs(speed));
+    #else
     digitalWrite(pinDir, HIGH) ;
     PinMan.analogWrite(pinPWM, 255-((byte)abs(speed)));
+    #endif
   } else {
+    #ifdef PCB_smallcar
+    digitalWrite(pinDir, HIGH) ;
+    PinMan.analogWrite(pinPWM, (byte)abs(speed));
+    #else
     digitalWrite(pinDir, LOW) ;
-    PinMan.analogWrite(pinPWM, ((byte)speed));
+    PinMan.analogWrite(pinPWM, speed);
+    #endif
   }
 }
 

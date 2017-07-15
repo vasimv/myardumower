@@ -21,6 +21,8 @@
   Private-use only! (you need to ask for a commercial-use)
 */
 
+// #define IMU_CONSTANT
+
 #include "imu.h"
 #include <Arduino.h>
 #include <Wire.h>
@@ -152,6 +154,22 @@ void IMU::loadSaveCalib(boolean readflag){
 }
 
 void IMU::loadCalib(){
+  #ifdef IMU_CONSTANT
+  comOfs.x = 0.35;
+  comOfs.y = 1.27;
+  comOfs.z = -4.51;
+  accScale.x =517.85;
+  accScale.y = 505.77;
+  accScale.z = 473.83;
+  comOfs.x = 110.50;
+  comOfs.y = -38.50;
+  comOfs.z = 310.00;
+  comScale.x =795.00;
+  comScale.y = 835.00;
+  comScale.z = 724.00;
+  calibrationAvail = true;
+  #endif
+
   short magic = 0;
   int addr = ADDR;
   eeread(addr, magic);

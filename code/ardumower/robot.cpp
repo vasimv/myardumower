@@ -27,7 +27,7 @@
 #include "mower.h"
 #include "flashmem.h"
 
-#define MAGIC 52
+#define MAGIC 53
 
 
 #define ADDR_USER_SETTINGS 0
@@ -35,7 +35,7 @@
 #define ADDR_ROBOT_STATS 800
 
 char* stateNames[]={"OFF ", "RC  ", "FORW", "ROLL", "REV ", "CIRC", "ERR ", "PFND", "PTRK", "PROL", "PREV", "STAT", "CHARG", "STCHK",
-  "STREV", "STROL", "STFOR", "MANU", "ROLW", "POUTFOR", "POUTREV", "POUTROLL", "TILT"};
+  "STREV", "STROL", "STFOR", "MANU", "ROLW", "POUTFOR", "POUTREV", "POUTROLL", "TILT", "EMROLL", "EMFORW", "RETURN", "PERISCAN"};
 
 char *mowPatternNames[] = {"RAND", "LANE", "BIDIR"};
 
@@ -118,15 +118,18 @@ Robot::Robot(){
   bumperLeftCounter = bumperRightCounter = 0;
   bumperLeft = bumperRight = false;          
    
-   dropLeftCounter = dropRightCounter = 0;                                                                                              // Dropsensor - Absturzsensor
-   dropLeft = dropRight = false;                                                                                                        // Dropsensor - Absturzsensor
+  dropLeftCounter = dropRightCounter = 0;                                                                                              // Dropsensor - Absturzsensor
+  dropLeft = dropRight = false;                                                                                                        // Dropsensor - Absturzsensor
   
   gpsLat = gpsLon = gpsX = gpsY = 0;
+  savedLat = savedLon = 0;
   robotIsStuckCounter = 0;
 
   imuDriveHeading = 0;
   imuRollHeading = 0;
+  imuRollHeadingPrev = 0;
   imuRollDir = LEFT;  
+  nearLat = nearLon = 0;
   
   perimeterMag = 0;
   perimeterInside = true;
@@ -164,7 +167,7 @@ Robot::Robot(){
   buttonCounter = 0;
   ledState = 0;
 
-  consoleMode = CONSOLE_SENSOR_COUNTERS; 
+  consoleMode = CONSOLE_ALL;
   nextTimeButtonCheck = 0;
   nextTimeInfo = 0;
   nextTimeMotorSense = 0;
@@ -200,6 +203,9 @@ Robot::Robot(){
   nextTimeRobotStats = 0;
   statsMowTimeMinutesTripCounter = 0;
   statsBatteryChargingCounter = 0;
+  prevMowCourse = 0;
+  obstacleAttempts = 0;
+  firstObstacleTime = 0;
 }
 
 char *Robot::mowPatternName(){
@@ -351,10 +357,16 @@ void Robot::readSensors(){
     motorRightSenseADC = readSensor(SEN_MOTOR_RIGHT);
     motorLeftSenseADC = readSensor(SEN_MOTOR_LEFT);
     motorMowSenseADC = readSensor(SEN_MOTOR_MOW);
-    
+
+    #ifdef PCB_smallcar
+    motorRightSenseCurrent = 0;
+    motorLeftSenseCurrent = 0;
+    motorMowSenseCurrent = 0;
+    #else 
     motorRightSenseCurrent = motorRightSenseCurrent * (1.0-accel) + ((double)motorRightSenseADC) * motorSenseRightScale * accel;
     motorLeftSenseCurrent = motorLeftSenseCurrent * (1.0-accel) + ((double)motorLeftSenseADC) * motorSenseLeftScale * accel;
     motorMowSenseCurrent = motorMowSenseCurrent * (1.0-accel) + ((double)motorMowSenseADC) * motorMowSenseScale * accel;
+    #endif
    
     if (batVoltage > 8){
       motorRightSense = motorRightSenseCurrent * batVoltage /1000;   // conversion to power in Watt
@@ -407,10 +419,26 @@ void Robot::readSensors(){
       	&& (stateCurr != STATE_STATION_CHARGING) && (stateCurr != STATE_STATION_CHECK) 
       	&& (stateCurr != STATE_STATION_REV) && (stateCurr != STATE_STATION_ROLL) 
       	&& (stateCurr != STATE_STATION_FORW) && (stateCurr != STATE_REMOTE) && (stateCurr != STATE_PERI_OUT_FORW)
-        && (stateCurr != STATE_PERI_OUT_REV) && (stateCurr != STATE_PERI_OUT_ROLL)) {
+        && (stateCurr != STATE_PERI_OUT_REV) && (stateCurr != STATE_PERI_OUT_ROLL)
+        && (stateCurr != STATE_EMERG_ROLL) && (stateCurr != STATE_EMERG_FORWARD)) {
         Console.println("Error: perimeter too far away");
         addErrorCounter(ERR_PERIMETER_TIMEOUT);
-        setNextState(STATE_ERROR,0);
+        // Let's try to return to saved position
+        if (imuUse && (savedLat != 0) && (savedLon != 0)) {
+          addErrorCounter(ERR_EMERG_RETURN);
+          setNextState(STATE_EMERG_ROLL, 0);
+        } else {
+          // Looks like we've failed, return to start point
+          if ((nearLat != 0) && (nearLon != 0)) {
+             savedLat = nearLat;
+             savedLon = nearLon;
+             addErrorCounter(ERR_EMERG_RETURN);
+             setNextState(STATE_EMERG_ROLL, 0);
+          } else {
+            // Nothing did work, fail
+            setNextState(STATE_ERROR,0);
+          }
+        }
       }
     }
   }
@@ -590,11 +618,11 @@ void Robot::receiveGPSTime(){
     byte month, day, hour, minute, second, hundredths;
     unsigned long age; 
     gps.crack_datetime(&year, &month, &day, &hour, &minute, &second, &hundredths, &age);
-    if (age != GPS::GPS_INVALID_AGE)
+    if (age != GPS::GPS_INVALID_AGE && (day < 32) && (day > 0) && (month > 0) && (month < 13) && (year > 2016) && (year < 2038) && (hour >= 0) && (hour < 24) && (minute >= 0) && (minute < 60))
     {
       Console.print(F("GPS date received: "));
       Console.println(date2str(datetime.date));  
-      datetime.date.dayOfWeek = getDayOfWeek(month, day, year, 1);      
+      datetime.date.dayOfWeek = getDayOfWeek(month, day, year, 1);
       datetime.date.day = day;
       datetime.date.month = month;
       datetime.date.year = year;
@@ -606,7 +634,8 @@ void Robot::receiveGPSTime(){
         Console.println(date2str(datetime.date));  
         setActuator(ACT_RTC, 0);            
       }
-    }      
+    } else
+      Console.println("Bad date received from GPS!");    
   }
 }
 
@@ -761,7 +790,7 @@ void Robot::checkPerimeterBoundary(){
         reverseOrBidir(RIGHT);
       }     
     }
-  } else {  
+  } else {
     if (stateCurr == STATE_FORWARD) {
       if (perimeterTriggerTime != 0) {
         if (millis() >= perimeterTriggerTime){        
@@ -780,12 +809,41 @@ void Robot::checkPerimeterBoundary(){
         if (millis() >= perimeterTriggerTime){ 
           perimeterTriggerTime = 0;
           setMotorPWM( 0, 0, false );
-          //if ((rand() % 2) == 0){
-          if (rotateLeft){    
+          if (!imuUse) {
+            //if ((rand() % 2) == 0){
+            if (rotateLeft){    
+            setNextState(STATE_PERI_OUT_ROLL, RIGHT);
+            } else {
+            setNextState(STATE_PERI_OUT_ROLL, LEFT);
+            }
+          } else {
+            imuRollHeading = imuRollHeadingPrev;
+            imuRollDir = RETURN;
+            stateEndTime += (motorRollTimeMax + motorZeroSettleTime);
+          }
+        }
+      }
+    } else if (stateCurr == STATE_REVERSE) {
+      if (perimeterTriggerTime != 0) {
+        if (millis() >= perimeterTriggerTime){        
+          perimeterTriggerTime = 0;
+          setMotorPWM( 0, 0, false );
+          //if ((rand() % 2) == 0){  
+          if(rotateLeft){  
           setNextState(STATE_PERI_OUT_FORW, LEFT);
           } else {
           setNextState(STATE_PERI_OUT_FORW, RIGHT);
-          }  
+          }
+        }
+      }
+    } else if (stateCurr == STATE_FASTRETURN_FORWARD) {
+      if (perimeterTriggerTime != 0) {
+        if (millis() >= perimeterTriggerTime){
+          // We've got out of perimeter while returning, switching to perimeter find
+          nearLat = nearLon = 0;
+          setMotorPWM( 0, 0, false );
+          perimeterTriggerTime = 0;
+          setNextState(STATE_PERI_FIND, 0);
         }
       }
     }
@@ -910,7 +968,7 @@ void Robot::checkIfStuck(){
   if ((gpsUse) && (gps.hdop() < 500))  {
   //float gpsSpeedRead = gps.f_speed_kmph();
   float gpsSpeed = gps.f_speed_kmph();
-  if (gpsSpeedIgnoreTime >= motorReverseTime) gpsSpeedIgnoreTime = motorReverseTime - 500;
+  // if (gpsSpeedIgnoreTime >= motorReverseTime) gpsSpeedIgnoreTime = motorReverseTime - 500;
   // low-pass filter
    // double accel = 0.1;
    // float gpsSpeed = (1.0-accel) * gpsSpeed + accel * gpsSpeedRead;
@@ -927,22 +985,22 @@ void Robot::checkIfStuck(){
     if ( (errorCounter[ERR_STUCK] == 0) && (stateCurr != STATE_OFF) && (stateCurr != STATE_MANUAL) && (stateCurr != STATE_STATION) 
         && (stateCurr != STATE_STATION_CHARGING) && (stateCurr != STATE_STATION_CHECK) 
         && (stateCurr != STATE_STATION_REV) && (stateCurr != STATE_STATION_ROLL) 
-        && (stateCurr != STATE_REMOTE) && (stateCurr != STATE_ERROR)) {
+        && (stateCurr != STATE_REMOTE) && (stateCurr != STATE_ERROR) && (batVoltage > (batGoHomeIfBelow - 0.1))) {
         motorMowEnable = true;
         errorCounterMax[ERR_STUCK] = 0;
   }
     return;
   }
 
-  if (robotIsStuckCounter >= 5){    
+  if (robotIsStuckCounter >= 15){    
     motorMowEnable = false;
-    if (errorCounterMax[ERR_STUCK] >= 3){   // robot is definately stuck and unable to move
+    if (errorCounterMax[ERR_STUCK] >= 10){   // robot is definately stuck and unable to move
     Console.println(F("Error: Mower is stuck"));
     addErrorCounter(ERR_STUCK);
     setNextState(STATE_ERROR,0);    //mower is switched into ERROR
     //robotIsStuckCounter = 0;
     }
-      else if (errorCounter[ERR_STUCK] < 3) {   // mower tries 3 times to get unstuck
+      else if (errorCounter[ERR_STUCK] < 5) {   // mower tries 3 times to get unstuck
         if (stateCurr == STATE_FORWARD){
       motorMowEnable = false;
       addErrorCounter(ERR_STUCK);             
@@ -1008,10 +1066,13 @@ void Robot::setNextState(byte stateNew, byte dir){
     if (stateNew == STATE_REVERSE) stateNew = STATE_PERI_REV;    
   }  
   if (stateNew == STATE_FORWARD) {    
-    if ((stateCurr == STATE_STATION_REV) ||(stateCurr == STATE_STATION_ROLL) || (stateCurr == STATE_STATION_CHECK) ) return;  
+    if ((stateCurr == STATE_STATION_REV) ||(stateCurr == STATE_STATION_ROLL) || (stateCurr == STATE_STATION_CHECK) ) {
+      return;  
+    }
     if ((stateCurr == STATE_STATION) || (stateCurr == STATE_STATION_CHARGING)) {
       stateNew = STATE_STATION_CHECK;         
     } 
+    imuDirPID.reset();
   }  
   // evaluate new state
   stateNext = stateNew;
@@ -1021,6 +1082,15 @@ void Robot::setNextState(byte stateNew, byte dir){
     stateEndTime = millis() + stationRevTime + motorZeroSettleTime;                     
 		setActuator(ACT_CHGRELAY, 0);         
   } else if (stateNew == STATE_STATION_ROLL){
+    nearLat = gps.latitude();
+    nearLon = gps.longitude();
+    savedLat = nearLat;
+    savedLon = nearLon;
+    if ((nearLat == GPS::GPS_INVALID_ANGLE) || (nearLon == GPS::GPS_INVALID_ANGLE)) {
+      // We don't have real coordinates, zero'ing return point
+      nearLat = nearLon = 0;
+    }
+    nearCourse = imu.ypr.yaw;
     motorLeftSpeedRpmSet = motorSpeedMaxRpm;
     motorRightSpeedRpmSet = -motorSpeedMaxRpm;						      
     stateEndTime = millis() + stationRollTime + motorZeroSettleTime;                     
@@ -1034,7 +1104,7 @@ void Robot::setNextState(byte stateNew, byte dir){
 		setActuator(ACT_CHGRELAY, 0);         
     motorMowEnable = false;
   
-  } else if (stateNew == STATE_PERI_ROLL) {    
+  } else if (stateNew == STATE_PERI_ROLL) {
     stateEndTime = millis() + perimeterTrackRollTime + motorZeroSettleTime;                     
     if (dir == RIGHT){
 	    motorLeftSpeedRpmSet = motorSpeedMaxRpm/2;
@@ -1055,35 +1125,52 @@ void Robot::setNextState(byte stateNew, byte dir){
     motorLeftSpeedRpmSet = motorRightSpeedRpmSet = -motorSpeedMaxRpm/1.25;                    
     stateEndTime = millis() + perimeterOutRevTime + motorZeroSettleTime; 
   }
-  else if (stateNew == STATE_PERI_OUT_ROLL){
-  
-  
-  
+  else if (stateNew == STATE_PERI_OUT_ROLL) {
+    if (imuUse && !perimeterInside) {
+      setNextState(STATE_PERI_SCAN, LEFT);
+      return;
+    }
+    imuRollPID.reset();
+    imuDirPID.reset();
   	//Ehl
-	//imuDriveHeading = scalePI(imuDriveHeading + PI); // toggle heading 180 degree (IMU)
-	if (imuRollDir == LEFT)
-	{
-		imuDriveHeading = scalePI(imuDriveHeading - random((PI / 2), PI )); // random toggle heading between 90 degree and 180 degrees (IMU)
-		imuRollHeading = scalePI(imuDriveHeading);
-		imuRollDir = rollDir;
-	}
-	else
-	{
-		imuDriveHeading = scalePI(imuDriveHeading + random((PI / 2), PI )); // random toggle heading between 90 degree and 180 degrees (IMU)
-		imuRollHeading = scalePI(imuDriveHeading);
-		imuRollDir = rollDir;
-	}
-	stateEndTime = millis() + random(perimeterOutRollTimeMin,perimeterOutRollTimeMax) + motorZeroSettleTime;
-	if (dir == RIGHT)
-	{
-		motorLeftSpeedRpmSet = motorSpeedMaxRpm/1.25;
-		motorRightSpeedRpmSet = -motorLeftSpeedRpmSet;           
-	}
-	else
-	{
-		motorRightSpeedRpmSet = motorSpeedMaxRpm/1.25;
-		motorLeftSpeedRpmSet = -motorRightSpeedRpmSet; 
-	}
+	  //imuDriveHeading = scalePI(imuDriveHeading + PI); // toggle heading 180 degree (IMU)
+	  if (imuRollDir == LEFT)
+	  {
+  		// imuDriveHeading = scalePI(imuDriveHeading - random((PI / 2), PI )); // random toggle heading between 90 degree and 180 degrees (IMU)
+		  // imuRollHeading = scalePI(imuDriveHeading);
+		  imuRollDir = rollDir;
+	  }
+	  else
+	  {
+  		// imuDriveHeading = scalePI(imuDriveHeading + random((PI / 2), PI )); // random toggle heading between 90 degree and 180 degrees (IMU)
+		  // imuRollHeading = scalePI(imuDriveHeading);
+		  imuRollDir = rollDir;
+	  }
+  	stateEndTime = millis() + random(perimeterOutRollTimeMin,perimeterOutRollTimeMax) + motorZeroSettleTime;
+  	if (dir == RIGHT)
+  	{
+		  motorLeftSpeedRpmSet = motorSpeedMaxRpm/1.25;
+		  motorRightSpeedRpmSet = -motorLeftSpeedRpmSet;           
+	  }
+	  else
+	  {
+  		motorRightSpeedRpmSet = motorSpeedMaxRpm/1.25;
+	  	motorLeftSpeedRpmSet = -motorRightSpeedRpmSet; 
+	  }
+    // Check if we're doing lane-by-lane and have to switch direction
+    if (mowPatternCurr == MOW_LANES) {
+      if ((millis() - firstObstacleTime) < 90000) {
+        obstacleAttempts++;
+        if (obstacleAttempts > 2)
+          prevMowCourse = scalePI(imuDriveHeading + PI / 2);
+        else
+          prevMowCourse = imuDriveHeading;
+      } else {
+        prevMowCourse = imuDriveHeading;
+        firstObstacleTime = millis();
+        obstacleAttempts = 0;
+      }
+    }
   }
   else if (stateNew == STATE_FORWARD){      
     motorLeftSpeedRpmSet = motorRightSpeedRpmSet = motorSpeedMaxRpm;  
@@ -1095,23 +1182,55 @@ void Robot::setNextState(byte stateNew, byte dir){
     stateEndTime = millis() + motorReverseTime + motorZeroSettleTime;
   }   
   else if (stateNew == STATE_ROLL) {                  
-      imuDriveHeading = scalePI(imuDriveHeading + PI); // toggle heading 180 degree (IMU)
+    imuRollPID.reset();
+    // Save current course in case the roll will end bad
+    if (dir != RETURN)
+      imuRollHeadingPrev = imu.ypr.yaw;
+    // imuDriveHeading = scalePI(imuDriveHeading + PI); // toggle heading 180 degree (IMU)
+    if (dir == RETURN) {
+      // We return to previous angle (perimeter out during roll)
+      imuRollHeading = imuRollHeadingPrev;
+      stateEndTime = millis() + motorRollTimeMax + motorZeroSettleTime;
+      imuRollDir = RETURN;
+    } else {
       if (imuRollDir == LEFT){
-        imuRollHeading = scalePI(imuDriveHeading - PI/20);        
+        imuRollHeading = scalePI(imuDriveHeading - PI/10);        
         imuRollDir = RIGHT;
       } else {
-        imuRollHeading = scalePI(imuDriveHeading + PI/20);        
+        imuRollHeading = scalePI(imuDriveHeading + PI/10);        
         imuRollDir = LEFT;
-      }      
+      }
       stateEndTime = millis() + random(motorRollTimeMin,motorRollTimeMax) + motorZeroSettleTime;
-      if (dir == RIGHT){
-	     motorLeftSpeedRpmSet = motorSpeedMaxRpm/1.25;
-	     motorRightSpeedRpmSet = -motorLeftSpeedRpmSet;						
-      } else {
-	     motorRightSpeedRpmSet = motorSpeedMaxRpm/1.25;
-	     motorLeftSpeedRpmSet = -motorRightSpeedRpmSet;	
-      }      
-  }  
+    }
+    if (dir == RIGHT){
+	    motorLeftSpeedRpmSet = motorSpeedMaxRpm/1.25;
+	    motorRightSpeedRpmSet = -motorLeftSpeedRpmSet;						
+    } else {
+	    motorRightSpeedRpmSet = motorSpeedMaxRpm/1.25;
+	    motorLeftSpeedRpmSet = -motorRightSpeedRpmSet;	
+    }
+  } else if (stateNew == STATE_EMERG_ROLL) {
+    imuRollPID.reset();
+    imuRollHeading = gps.f_bearing(gps.latitude(), gps.longitude(), savedLat, savedLon);
+
+    motorLeftSpeedRpmSet = motorRightSpeedRpmSet = (motorSpeedMaxRpm / 1.25);
+    stateEndTime = millis() + 3 * (random(motorRollTimeMin,motorRollTimeMax) + motorZeroSettleTime); 
+    motorMowEnable = false;
+    Console.print("Emergency return to: ");
+    Console.print(savedLat);
+    Console.print(",");
+    Console.print(savedLon);
+    Console.print("; bearing: ");
+    Console.print(imuDriveHeading);
+    Console.print(", distance: ");
+    Console.println(gps.f_distance(gps.latitude(), gps.longitude(), savedLat, savedLon));
+  } else if (stateNew == STATE_EMERG_FORWARD) {
+    imuDirPID.reset();
+    imuDriveHeading = gps.f_bearing(gps.latitude(), gps.longitude(), savedLat, savedLon);
+    stateEndTime = millis() + 30000;
+    motorMowEnable = false;
+    motorLeftSpeedRpmSet = motorRightSpeedRpmSet = motorSpeedMaxRpm;
+  }
   if (stateCurr == STATE_STATION_CHARGING) {
 		// always switch off charging relay if leaving state STATE_STATION_CHARGING
 		setActuator(ACT_CHGRELAY, 0); 
@@ -1121,6 +1240,9 @@ void Robot::setNextState(byte stateNew, byte dir){
     //motorMowModulate = false;              
   } 
   if (stateNew == STATE_STATION){
+    nearLat = 0;
+    nearLon = 0;
+    nearCourse = 0;
     setMotorPWM(0,0,false);
     setActuator(ACT_CHGRELAY, 0); 
     setDefaults(); 
@@ -1133,6 +1255,9 @@ void Robot::setNextState(byte stateNew, byte dir){
     setDefaults();        
   }
   if (stateNew == STATE_OFF){
+    nearLat = 0;
+    nearLon = 0;
+    nearCourse = 0;
     setActuator(ACT_CHGRELAY, 0);
     setDefaults();   
     statsMowTimeTotalStart = false; // stop stats mowTime counter
@@ -1150,9 +1275,21 @@ void Robot::setNextState(byte stateNew, byte dir){
     //loadSaveRobotStats(false);   
   }
   if (stateNew == STATE_PERI_FIND){
+    if (nearLat != 0 && nearLon != 0 && imuUse && gpsUse) {
+      // Use coordinates to return to station faster
+      savedLat = nearLat;
+      savedLon = nearLon;
+      setNextState(STATE_FASTRETURN_FORWARD, LEFT);
+      return;
+    }
     // find perimeter  => drive half speed      
     motorLeftSpeedRpmSet = motorRightSpeedRpmSet = motorSpeedMaxRpm / 1.5;    
     //motorMowEnable = false;     // FIXME: should be an option?
+  }
+  if (stateNew == STATE_FASTRETURN_FORWARD) {
+    stateEndTime = millis() + 120000;
+    scanStatus = 0;
+    motorLeftSpeedRpmSet = motorRightSpeedRpmSet = motorSpeedMaxRpm;
   }
   if (stateNew == STATE_PERI_TRACK){        
     //motorMowEnable = false;     // FIXME: should be an option?
@@ -1163,6 +1300,21 @@ void Robot::setNextState(byte stateNew, byte dir){
   if (stateNew != STATE_REMOTE){
     motorMowSpeedPWMSet = motorMowSpeedMaxPwm;
   }
+
+  if (stateNew == STATE_PERI_SCAN) {
+    if (imuUse) {
+      // Start scanning for maximum/minimum perimeter signal
+      imuRollPID.reset();
+      motorMowEnable = false;
+      scanStatus = 0;
+      minPeriScan = 99999.9;
+      maxPeriScan = 0;
+      stateEndTime = millis() + 15000;
+      motorRightSpeedRpmSet = motorSpeedMaxRpm/1.4;
+      motorLeftSpeedRpmSet = -motorRightSpeedRpmSet;
+    } else
+      setNextState(STATE_PERI_OUT_REV, 0);
+  }
  
   sonarObstacleTimeout = 0;
   // state has changed    
@@ -1170,7 +1322,20 @@ void Robot::setNextState(byte stateNew, byte dir){
   stateLast = stateCurr;
   stateCurr = stateNext;    
   perimeterTriggerTime=0;
-  printInfo(Console);          
+  printInfo(Console);
+}
+
+void Robot::savePoint() {
+  if ((savedLatPrev != GPS::GPS_INVALID_ANGLE) && (savedLonPrev != GPS::GPS_INVALID_ANGLE)) {
+    savedLat = savedLatPrev;
+    savedLon = savedLonPrev;
+    Console.print("Saving emergency return point: ");
+    Console.print(savedLat);
+    Console.print(',');
+    Console.println(savedLon);
+  }
+  savedLatPrev = gps.latitude();
+  savedLonPrev = gps.longitude();
 }
 
 
@@ -1194,7 +1359,14 @@ void Robot::loop()  {
 
   if (gpsUse) { 
     gps.feed();
-    processGPSData();    
+    processGPSData();
+    if (!perimeterInside || perimeter.signalTimedOut(0))
+      nextSaveTime = millis() + 15000;
+    if (((stateCurr == STATE_OFF) || (stateCurr == STATE_FORWARD)) && perimeterInside && !perimeter.signalTimedOut(0) && (millis() > nextSaveTime) && ((millis() - stateStartTime) > 15000)) {
+      // Save emergency return coordinates every 10 seconds
+      nextSaveTime = millis() + 15000;
+      savePoint();
+    }
   }
 
   if (millis() >= nextTimePfodLoop){
@@ -1282,22 +1454,91 @@ void Robot::loop()  {
       checkSonar();             
       checkPerimeterBoundary(); 
       checkLawn();      
-      checkTimeout();      
+      checkTimeout();
       break;
     case STATE_ROLL:
       checkCurrent();            
       checkBumpers();
       checkDrop();                                                                                                                            // Dropsensor - Absturzsensor
-      //checkSonar();             
-      checkPerimeterBoundary(); 
+      //checkSonar();
+      if (imuRollDir != RETURN)
+        checkPerimeterBoundary();
       checkLawn();
-      // making a roll (left/right)            
-      if (mowPatternCurr == MOW_LANES){
+      // making a roll (left/right)
+      if ((imuRollDir != RETURN) && (mowPatternCurr == MOW_LANES)) {
         if (abs(distancePI(imu.ypr.yaw, imuRollHeading)) < PI/36) setNextState(STATE_FORWARD,0);				        
       } else {
+        if ((imuRollDir == RETURN) && abs(distancePI(imu.ypr.yaw, imuRollHeading)) < PI/36) {
+          if (perimeterInside) 
+            setNextState(STATE_FORWARD,0);
+          else
+            setNextState(STATE_PERI_OUT_FORW, 0);  
+        }
+      }
+      if (millis() >= stateEndTime)
+        setNextState(STATE_FORWARD,0);
+      break;
+    case STATE_EMERG_ROLL: // Emergency roll to last saved point
+      checkCurrent();
+      if (abs(distancePI(imu.ypr.yaw, imuRollHeading)) < PI/72) setNextState(STATE_EMERG_FORWARD,0);
+      if (millis() >= stateEndTime) setNextState(STATE_EMERG_FORWARD,0);
+      break;
+    case STATE_EMERG_FORWARD:
+      imuDriveHeading = gps.f_bearing(gps.latitude(), gps.longitude(), savedLat, savedLon);
+      checkCurrent();
+      if (perimeterInside) {
+        if (gps.f_distance(gps.latitude(), gps.longitude(), savedLat, savedLon) < 3.0) {
+          if (batVoltage > (batGoHomeIfBelow - 0.1))
+            motorMowEnable = true;
+          setNextState(STATE_FORWARD, 0);
+        }
+        checkSonar();
+      }
+      // Check if we're still outside of the perimeter and make error or switch to forward
+      if (millis() >= stateEndTime) {
+        if (!perimeterInside) {
+          Console.println("Could not reach perimeter during emergency run!");
+          setNextState(STATE_ERROR, 0);
+        } else {
+          if (batVoltage > (batGoHomeIfBelow - 0.1))
+          setNextState(STATE_FORWARD, 0);
+        }
+      }
+      break;
+    case STATE_FASTRETURN_FORWARD:
+      // Returning to the start point (after driving out the station)
+      if (!imuUse || !nearLat || !nearLon || (gps.latitude() == GPS::GPS_INVALID_ANGLE) || (gps.longitude() == GPS::GPS_INVALID_ANGLE))
+        // failed to receive GPS coordinates, switching to perimeter find
+        setNextState(STATE_PERI_FIND, 0);
+      else {
+        imuDriveHeading = imuRollHeading = gps.f_bearing(gps.latitude(), gps.longitude(), nearLat, nearLon);
+        if (abs(distancePI(imu.ypr.yaw, imuRollHeading)) < PI/36)
+          scanStatus = 1;
+        checkErrorCounter();
+        checkCurrent();            
+        checkBumpers();
+        checkSonar();
+        motorMowEnable = false;
+        checkPerimeterBoundary();
+        if (gps.f_distance(gps.latitude(), gps.longitude(), savedLat, savedLon) < 1.5) {
+          // We're close near return point, turn left about 90 degrees
+          imuDriveHeading = imuRollHeading = scalePI(nearCourse - PI/2);
+          if (abs(distancePI(imu.ypr.yaw, imuDriveHeading)) < PI/36) {
+            // We've turned to left, let's find perimeter now
+            nearLat = nearLon = 0;
+            setNextState(STATE_PERI_FIND, 0);
+          }
+        }
+        // We couldn't return to the point in time, just find perimeter now
         if (millis() >= stateEndTime) {
-          setNextState(STATE_FORWARD,0);				          
-        }        
+          nearLat = nearLon = 0;
+          setNextState(STATE_PERI_FIND, 0);
+        }
+        if (!perimeterInside) {
+          // Found perimeter boundary, switch to track it
+          nearLat = nearLon = 0;
+          setNextState(STATE_PERI_FIND, 0);
+        }
       }
       break;
     case STATE_ROLL_WAIT:
@@ -1350,13 +1591,15 @@ void Robot::loop()  {
         checkSonar();                           
       }  
       checkPerimeterFind();      
-      checkTimeout();                    
+      checkTimeout();
       break;
     case STATE_PERI_TRACK:
       // track perimeter
       checkCurrent();                  
       checkBumpersPerimeter();
-      //checkSonar();                   
+      //checkSonar();         
+
+      motorMowEnable = false;
       if (batMonitor){
         if (chgVoltage > 5.0){ 
           setNextState(STATE_STATION, 0);
@@ -1367,17 +1610,25 @@ void Robot::loop()  {
       // waiting until auto-start by user or timer triggered
       if (batMonitor){
         if (chgVoltage > 5.0) {
-          if (batVoltage < startChargingIfBelow && (millis()-stateStartTime>2000)){
-            setNextState(STATE_STATION_CHARGING,0);
-          } else checkTimer();  
+          if (millis()-stateStartTime>2000){
+            if (batVoltage < startChargingIfBelow) {
+              setActuator(ACT_CHGRELAY, 1);
+              setNextState(STATE_STATION_CHARGING,0);
+            } else {
+              setActuator(ACT_CHGRELAY, 0);
+              checkTimer();  
+            }
+          }
         } else setNextState(STATE_OFF,0);
       }  else checkTimer();
       break;     
     case STATE_STATION_CHARGING:
       // waiting until charging completed    
       if (batMonitor){
-        if ((chgCurrent < batFullCurrent) && (millis()-stateStartTime>2000)) setNextState(STATE_STATION,0); 
+        if (((chgCurrent < batFullCurrent) || (batVoltage >= batFull)) && (millis()-stateStartTime>2000)) setNextState(STATE_STATION,0);
+        // if ((batVoltage >= batFull) && (millis()-stateStartTime>2000)) setNextState(STATE_STATION,0);
           else if (millis()-stateStartTime > chargingTimeout) {
+            setActuator(ACT_CHGRELAY, 0);
             addErrorCounter(ERR_BATTERY);
             setNextState(STATE_ERROR, 0);
           }
@@ -1394,7 +1645,14 @@ void Robot::loop()  {
       if (perimeterInside || (millis() >= stateEndTime)) setNextState (STATE_PERI_OUT_ROLL, rollDir); 
       break;
     case STATE_PERI_OUT_ROLL: 
-      if (millis() >= stateEndTime) setNextState(STATE_FORWARD,0);                
+      if (millis() >= stateEndTime) {
+        if (perimeterInside) {
+          imuDriveHeading = scalePI(prevMowCourse + PI);
+          setNextState(STATE_FORWARD,0);                
+        } else {
+          setNextState(STATE_PERI_SCAN, LEFT);
+        }
+      }
       break;
 
     case STATE_STATION_CHECK:
@@ -1419,8 +1677,50 @@ void Robot::loop()  {
       break;
     case STATE_STATION_FORW:
       // forward (charge station)    
-      if (millis() >= stateEndTime) setNextState(STATE_FORWARD,0);				        
-      break;      
+      if (millis() >= stateEndTime) {
+        prevMowCourse = imuDriveHeading = imu.ypr.yaw;
+        setNextState(STATE_FORWARD,0);				        
+      }
+      break;
+    case STATE_PERI_SCAN:
+      if (millis() >= stateEndTime) {
+        if (scanStatus == 0) {
+          // We've finished scanning by turning around, turn to maximum/minimum angle
+          scanStatus = 1;
+          if (rollDir == LEFT)
+            imuRollHeading = headMax;
+          else
+            imuRollHeading = headMin;
+          stateEndTime = millis() + 15000;
+          motorLeftSpeedRpmSet = motorSpeedMaxRpm/1.25;
+          motorRightSpeedRpmSet = motorSpeedMaxRpm/1.25;
+        } else {
+          // We've turned to the angle, switching to forward
+          if (perimeterInside) {
+            if (mowPatternCurr == MOW_LANES)
+              imuDriveHeading = scalePI(imuDriveHeading + PI);
+            setNextState(STATE_FORWARD, 0);
+          } else
+            setNextState(STATE_PERI_OUT_FORW, 0);  
+        }
+      }
+      if (scanStatus) {
+        if (abs(distancePI(imu.ypr.yaw, imuRollHeading)) < PI/36) {
+          if (perimeterInside) {
+            if (mowPatternCurr == MOW_LANES)
+              imuDriveHeading = scalePI(imuDriveHeading + PI);
+            setNextState(STATE_FORWARD, 0);
+          } else
+             setNextState(STATE_PERI_OUT_FORW, 0);
+        }
+      } else {
+        if ((rollDir == LEFT) && (perimeterInside)) {
+          if (mowPatternCurr == MOW_LANES)
+            imuDriveHeading = scalePI(imuDriveHeading + PI);
+          setNextState(STATE_FORWARD, 0);
+        }
+      }
+      break;
   } // end switch  
       
 
@@ -1429,14 +1729,27 @@ void Robot::loop()  {
 
   
     // decide which motor control to use
-    if ( ((mowPatternCurr == MOW_LANES) && (stateCurr == STATE_ROLL)) || (stateCurr == STATE_ROLL_WAIT) ) motorControlImuRoll();
+    if ( ((mowPatternCurr == MOW_LANES) && (stateCurr == STATE_ROLL)) || (stateCurr == STATE_ROLL_WAIT) || (stateCurr == STATE_EMERG_ROLL) || ((stateCurr == STATE_PERI_SCAN) && (scanStatus != 0))
+          || ((stateCurr == STATE_FASTRETURN_FORWARD) && (scanStatus == 0))) motorControlImuRoll();
       else if (stateCurr == STATE_PERI_TRACK) motorControlPerimeter();
+      else if (((stateCurr == STATE_EMERG_FORWARD) || ((stateCurr == STATE_FASTRETURN_FORWARD) && (scanStatus != 0))) && imuUse) motorControlImuDir();
       else if (  (stateCurr == STATE_FORWARD)
        //&&  (mowPatternCurr == MOW_RANDOM)
        && (imuUse) 
        && (imuCorrectDir || (mowPatternCurr == MOW_LANES))        
        ) motorControlImuDir();                                   //&& (millis() > stateStartTime + 3000)
-      else motorControl();  
+      else motorControl();
+
+  if ((stateCurr == STATE_PERI_SCAN) && (scanStatus == 0)) {
+    if (minPeriScan > abs(perimeterMag)) {
+      minPeriScan = abs(perimeterMag);
+      headMin = imu.ypr.yaw;
+    }
+    if (maxPeriScan < abs(perimeterMag)) {
+      maxPeriScan = abs(perimeterMag);
+      headMax = imu.ypr.yaw;
+    }
+  }
   
   if (stateCurr != STATE_REMOTE) motorMowSpeedPWMSet = motorMowSpeedMaxPwm;
     

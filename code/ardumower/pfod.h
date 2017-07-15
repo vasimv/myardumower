@@ -46,7 +46,7 @@
 enum { PFOD_OFF, PFOD_MENU, PFOD_LOG_SENSORS, 
        PFOD_PLOT_BAT, PFOD_PLOT_ODO2D, PFOD_PLOT_IMU, PFOD_PLOT_SENSOR_COUNTERS, 
        PFOD_PLOT_SENSORS, PFOD_PLOT_PERIMETER, PFOD_PLOT_GPS, PFOD_PLOT_GPS2D,
-       PFOD_PLOT_MOTOR };
+       PFOD_PLOT_MOTOR, PFOD_LOG_EXTENDED };
 
 class Robot;
 
@@ -149,7 +149,8 @@ class RemoteControl
     void processTimerDetailMenu(String pfodCmd);    
     void sendTimerMenu(boolean update);
     void processTimerMenu(String pfodCmd);
-              
+
+    void printCoord(Stream &s, long lat, long lon);
 };
 
 

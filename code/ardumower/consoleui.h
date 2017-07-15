@@ -1,5 +1,7 @@
 // serial console menu etc.
 
+#include <avr/wdt.h>
+
 void Robot::purgeConsole() {
   while (Console.available())
     Console.read();
@@ -25,7 +27,9 @@ String Robot::waitStringConsole() {
 
 
 void Robot::printInfo(Stream &s){
-  
+  unsigned long gpsdate, gpstime;
+
+  wdt_reset();
   /*Console.print(millis()/1000);
   Console.print(",");
   Console.print(motorMowRPMSet);
@@ -34,63 +38,66 @@ void Robot::printInfo(Stream &s){
   Console.print(",");
   Console.println(motorMowPWMCurr);
   return;*/
-  //Console.println(time2str(datetime.time));
+  //Console.print(time2str(datetime.time));
+  //Console.print(':');
 
   if (consoleMode == CONSOLE_OFF) {
   } else {
-  Streamprint(s, "t%6u ", (millis()-stateStartTime)/1000);  
-  Streamprint(s, "l%3u ", loopsPerSec);  
+  gps.get_datetime(&gpsdate, &gpstime);
+  Streamprint(s, "%08lu:", (unsigned long) gpstime);  
+  Streamprint(s, "t%6u ", (unsigned int) ((millis()- (unsigned long) stateStartTime)/1000));  
+  Streamprint(s, "l%3u ", (unsigned int) loopsPerSec);  
   //Streamprint(s, "r%4u ", freeRam());  
   Streamprint(s, "v%1d ", consoleMode);			    
   Streamprint(s, "%4s ", stateNames[stateCurr]);			    
-  if (consoleMode == CONSOLE_PERIMETER){
+  if (consoleMode == CONSOLE_PERIMETER || consoleMode == CONSOLE_ALL){
     Streamprint(s, "sig min %4d max %4d avg %4d mag %5d qty %3d",
       (int)perimeter.getSignalMin(0), (int)perimeter.getSignalMax(0), (int)perimeter.getSignalAvg(0),
       perimeterMag, (int)(perimeter.getFilterQuality(0)*100.0));
-    Streamprint(s, "  in %2d  cnt %4d  on %1d\r\n",  
-      (int)perimeterInside, perimeterCounter, (int)(!perimeter.signalTimedOut(0)) );      
-  } else {  
-    if (odometryUse) Streamprint(s, "odo %4d %4d ", (int)odometryLeft, (int)odometryRight);   
-    Streamprint(s, "spd %4d %4d %4d ", (int)motorLeftSpeedRpmSet, (int)motorRightSpeedRpmSet, (int)motorMowRpmCurr);
-    if (consoleMode == CONSOLE_SENSOR_VALUES){
-      // sensor values
-      Streamprint(s, "sen %4d %4d %4d ", (int)motorLeftSense, (int)motorRightSense, (int)motorMowSense);
-      Streamprint(s, "bum %4d %4d ", bumperLeft, bumperRight);
-      Streamprint(s, "dro %4d %4d ", dropLeft, dropRight);                                                                                      // Dropsensor - Absturzsensor
-      Streamprint(s, "son %4d %4d %4d ", sonarDistLeft, sonarDistCenter, sonarDistRight);
-      Streamprint(s, "yaw %3d ", (int)(imu.ypr.yaw/PI*180.0));  
-      Streamprint(s, "pit %3d ", (int)(imu.ypr.pitch/PI*180.0));
-      Streamprint(s, "rol %3d ", (int)(imu.ypr.roll/PI*180.0));
-      if (perimeterUse) Streamprint(s, "per %3d ", (int)perimeterInside);              
-      if (lawnSensorUse) Streamprint(s, "lawn %3d %3d ", (int)lawnSensorFront, (int)lawnSensorBack);
-    } else {
-      // sensor counters
-      Streamprint(s, "sen %4d %4d %4d ", motorLeftSenseCounter, motorRightSenseCounter, motorMowSenseCounter);
-      Streamprint(s, "bum %4d %4d ", bumperLeftCounter, bumperRightCounter);
-      Streamprint(s, "dro %4d %4d ", dropLeftCounter, dropRightCounter);                                                                      // Dropsensor - Absturzsensor
-      Streamprint(s, "son %3d ", sonarDistCounter);
-      Streamprint(s, "yaw %3d ", (int)(imu.ypr.yaw/PI*180.0));        
-      Streamprint(s, "pit %3d ", (int)(imu.ypr.pitch/PI*180.0));
-      Streamprint(s, "rol %3d ", (int)(imu.ypr.roll/PI*180.0));
-      //Streamprint(s, "per %3d ", perimeterLeft);          
-      if (perimeterUse) Streamprint(s, "per %3d ", perimeterCounter);                  
-      if (lawnSensorUse) Streamprint(s, "lawn %3d ", lawnSensorCounter);
-      if (gpsUse) Streamprint(s, "gps %2d ", (int)gps.satellites());            
-    }
-    Streamprint(s, "bat %2d.%01d ", (int)batVoltage, (int)((batVoltage *10) - ((int)batVoltage*10)) );       
-    Streamprint(s, "chg %2d.%01d %2d.%01d ", 
-        (int)chgVoltage, (int)((chgVoltage *10) - ((int)chgVoltage*10)),
-        (int)chgCurrent, (int)((abs(chgCurrent) *10) - ((int)abs(chgCurrent)*10))    
-      );    
-    Streamprint(s, "imu%3d ", imu.getCallCounter());  
-    Streamprint(s, "adc%3d ", ADCMan.getCapturedChannels());  
-    Streamprint(s, "%s\r\n", name.c_str());                  
+    Streamprint(s, "  in %2d  cnt %4d  on %1d ",  
+      (int)perimeterInside, (int)perimeterCounter, (int)(!perimeter.signalTimedOut(0)) );      
   }
+  if (odometryUse) Streamprint(s, "odo %4d %4d ", (int)odometryLeft, (int)odometryRight);   
+  Streamprint(s, "spd %4d %4d %4d ", (int)motorLeftSpeedRpmSet, (int)motorRightSpeedRpmSet, (int)lastMowSpeedPWM);
+  if (consoleMode == CONSOLE_SENSOR_VALUES || consoleMode == CONSOLE_ALL){
+    // sensor values
+    Streamprint(s, "sen %4d %4d %4d ", (int)motorLeftSense, (int)motorRightSense, (int)motorMowSense);
+    Streamprint(s, "bum %4d %4d ", bumperLeft, bumperRight);
+    Streamprint(s, "dro %4d %4d ", dropLeft, dropRight);                                                                                      // Dropsensor - Absturzsensor
+    Streamprint(s, "son %4d %4d %4d ", sonarDistLeft, sonarDistCenter, sonarDistRight);
+    Streamprint(s, "yaw %3d ", (int)(imu.ypr.yaw/PI*180.0));  
+    Streamprint(s, "pit %3d ", (int)(imu.ypr.pitch/PI*180.0));
+    Streamprint(s, "rol %3d ", (int)(imu.ypr.roll/PI*180.0));
+    if (perimeterUse) Streamprint(s, "per %3d ", (int)perimeterInside);              
+    if (lawnSensorUse) Streamprint(s, "lawn %3d %3d ", (int)lawnSensorFront, (int)lawnSensorBack);
+  }
+  if (consoleMode == CONSOLE_SENSOR_COUNTERS) {
+    // sensor counters
+    Streamprint(s, "sen %4d %4d %4d ", motorLeftSenseCounter, motorRightSenseCounter, motorMowSenseCounter);
+    Streamprint(s, "bum %4d %4d ", bumperLeftCounter, bumperRightCounter);
+    Streamprint(s, "dro %4d %4d ", dropLeftCounter, dropRightCounter);                                                                      // Dropsensor - Absturzsensor
+    Streamprint(s, "son %3d ", sonarDistCounter);
+    Streamprint(s, "yaw %3d ", (int)(imu.ypr.yaw/PI*180.0));        
+    Streamprint(s, "pit %3d ", (int)(imu.ypr.pitch/PI*180.0));
+    Streamprint(s, "rol %3d ", (int)(imu.ypr.roll/PI*180.0));
+    //Streamprint(s, "per %3d ", perimeterLeft);          
+    if (perimeterUse) Streamprint(s, "per %3d ", perimeterCounter);                  
+    if (lawnSensorUse) Streamprint(s, "lawn %3d ", lawnSensorCounter);
+  }
+  if (gpsUse) Streamprint(s, "gps %2d %10ld %10ld ", (int)gps.satellites(), (long) gps.latitude(), (long) gps.longitude());
+  Streamprint(s, "bat %2d.%01d ", (int)batVoltage, (int)((batVoltage *10) - ((int)batVoltage*10)) );       
+  Streamprint(s, "chg %2d.%01d %2d.%01d ", 
+        (int)chgVoltage, (int)((chgVoltage *10) - ((int)chgVoltage*10)),
+        (int)chgCurrent, (int)((abs(chgCurrent) *10) - ((int)abs(chgCurrent)*10))
+      );    
+  Streamprint(s, "imu%3d ", imu.getCallCounter());  
+  Streamprint(s, "adc%3d ", ADCMan.getCapturedChannels()); 
+  Streamprint(s, "%s\r\n", name.c_str());
  }
 }
 
 
-void Robot::printMenu(){  
+void Robot::printMenu() {  
   Console.println();
   Console.println(F(" MAIN MENU:"));
   Console.println(F("1=test motors"));
@@ -257,7 +264,8 @@ void Robot::testMotors(){
 void Robot::menu(){  
   char ch;  
   printMenu();  
-  while(true){    
+  while(true){
+    wdt_reset();    
     resetIdleTime();
     imu.update();
     if (Console.available() > 0) {
@@ -463,10 +471,12 @@ void Robot::readSerial() {
          break;
        case '+':
          setNextState(STATE_ROLL_WAIT, 0); // press '+' to rotate 90 degrees (IMU)
+         imuRollPID.reset();
          imuRollHeading = scalePI(imuRollHeading + PI/2);
          break;
        case '-':
          setNextState(STATE_ROLL_WAIT, 0); // press '+' to rotate 90 degrees (IMU)
+         imuRollPID.reset();
          imuRollHeading = scalePI(imuRollHeading - PI/2);
          break;
        case 'i':
